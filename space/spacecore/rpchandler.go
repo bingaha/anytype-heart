@@ -41,20 +41,12 @@ func (r *rpcHandler) ObjectSyncRequestStream(req *spacesyncproto.ObjectSyncMessa
 }
 
 func (r *rpcHandler) SpaceExchange(ctx context.Context, request *clientspaceproto.SpaceExchangeRequest) (resp *clientspaceproto.SpaceExchangeResponse, err error) {
-	allIds, err := r.s.spaceStorageProvider.AllSpaceIds()
-	if err != nil {
-		return
-	}
-	if request.LocalServer != nil {
-		peerId, err := peer.CtxPeerId(ctx)
-		if err != nil {
-			return nil, err
-		}
-		r.s.recordLocalPeer(ctx, peerId, request.LocalServer, request.SpaceIds, false)
-	}
-	log.Debug("returning list with ids", zap.Strings("spaceIds", allIds))
-	resp = &clientspaceproto.SpaceExchangeResponse{SpaceIds: allIds}
-	return
+	// Deprecated plaintext handshake, disabled in the fork: it hands our
+	// full space id list to whoever asks, which the admission gate exists
+	// to prevent. The member-signature SpaceExchangeV2 below is the only
+	// path that learns anything. Answer empty and record nothing, so a
+	// downgrade attempt yields no byte and no address.
+	return &clientspaceproto.SpaceExchangeResponse{}, nil
 }
 
 // recordLocalPeer registers the addresses a LAN peer advertised and the spaces
@@ -115,11 +107,13 @@ func (s *service) recordLocalPeer(ctx context.Context, peerId string, localServe
 	log.Info("updated local peer", zap.Strings("ips", installed), zap.String("peerId", peerId), zap.Strings("spaceIds", spaceIds))
 }
 
-// SpaceExchangeV2 is the inbound side of the token handshake: compute this
-// device's expected request token for every space it holds a discovery key
-// for, intersect with what the caller sent, and answer with membership proofs
-// for the intersection only — keyed by the caller's nonce, so a response can
-// be neither precomputed nor replayed.
+// SpaceExchangeV2 is the inbound side of the admission handshake. The gate
+// runs first: bind the caller's nonce to our network passphrase and our
+// NetworkId before touching any space state — a caller with another
+// passphrase, another NetworkId, or no membership verifies nothing, and the
+// answer carries no space-derived byte. Only a non-empty verified
+// intersection is answered with membership proofs and recorded for syncing;
+// an empty one records nothing at all, so strangers leave no trace.
 func (r *rpcHandler) SpaceExchangeV2(ctx context.Context, request *clientspaceproto.SpaceExchangeV2Request) (*clientspaceproto.SpaceExchangeV2Response, error) {
 	callerPeerId, err := peer.CtxPeerId(ctx)
 	if err != nil {
@@ -131,14 +125,25 @@ func (r *rpcHandler) SpaceExchangeV2(ctx context.Context, request *clientspacepr
 	if len(request.SpaceTokens) > clientspaceproto.MaxTokensV2 {
 		return nil, fmt.Errorf("space exchange v2: too many tokens (%d)", len(request.SpaceTokens))
 	}
+	// the gate first: passphrase + NetworkId bound to the caller's nonce.
+	// Any failure fails closed with an error and no proofs.
+	salt, err := r.s.admissionSaltFor(request.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("space exchange v2 admission: %w", err)
+	}
 	allIds, err := r.s.spaceStorageProvider.AllSpaceIds()
 	if err != nil {
 		return nil, fmt.Errorf("all space ids: %w", err)
 	}
 	selfPeerId := r.s.wallet.GetDevicePrivkey().GetPublic().PeerId()
-	keys := r.s.discoveryKeys.DiscoveryKeys(ctx, allIds)
+	memberKeys := r.s.admissionMemberKeys(ctx, allIds)
 	// we are the responder, so the pair is ordered (them, us)
-	shared, respTokens := respondTokens(allIds, keys, request.SpaceTokens, request.Nonce, callerPeerId, selfPeerId)
+	shared, respTokens := respondMemberTokens(allIds, memberKeys, request.SpaceTokens, salt, callerPeerId, selfPeerId, r.s.wallet.GetAccountPrivkey())
+	if len(shared) == 0 {
+		// no verified intersection: no proofs to give, nothing to record.
+		log.Debug("space exchange v2 admitted nothing", zap.String("peerId", callerPeerId))
+		return &clientspaceproto.SpaceExchangeV2Response{}, nil
+	}
 	// a request without LocalServer is a plain probe: answer the proofs but
 	// record nothing
 	if request.LocalServer != nil {

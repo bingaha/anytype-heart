@@ -509,7 +509,9 @@ func TestFileSync_BindNotFoundDropsCachedPlan(t *testing.T) {
 }
 
 func TestFileSync_DeleteResetsParkedSchedule(t *testing.T) {
-	// Deleting a file parked with a long backoff must not wait the backoff out
+	// Deleting a file parked with a long backoff must not wait the backoff out:
+	// it waits out the byte retention window instead.
+	withRetention(t, time.Hour)
 	fx := newFixture(t, 1024*1024*1024)
 	defer fx.Finish(t)
 
@@ -532,8 +534,8 @@ func TestFileSync_DeleteResetsParkedSchedule(t *testing.T) {
 	it, err := fx.queue.GetById(objectId)
 	require.NoError(t, err)
 	assert.Equal(t, FileStatePendingDeletion, it.State)
-	assert.True(t, it.ScheduledAt.Before(time.Now().Add(5*time.Minute)),
-		"deletion must be scheduled promptly, not after the parked backoff")
+	assert.WithinDuration(t, time.Now().Add(time.Hour), it.ScheduledAt, 5*time.Minute,
+		"deletion waits out the retention window, not the parked backoff")
 	require.NoError(t, fx.queue.ReleaseAndUpdate(objectId, it))
 }
 

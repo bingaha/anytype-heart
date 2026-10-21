@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/cheggaaa/mb/v3"
 	"go.uber.org/zap"
@@ -25,6 +26,11 @@ type downloadTask struct {
 	objectId string
 	spaceId  string
 	fileId   domain.FileId
+	// resumeOffset carries the content bytes already confirmed present
+	// across attempts, so a requeued task continues instead of restarting.
+	resumeOffset int64
+	// attempts counts worker-level retries of this task.
+	attempts int
 }
 
 type downloader struct {
@@ -38,7 +44,7 @@ type downloader struct {
 
 	eventsQueue *mb.MB[*pb.EventMessage]
 
-	handleTask        func(ctx context.Context, t downloadTask) error
+	handleTask func(ctx context.Context, t downloadTask) (int64, error)
 	filesSubscription *objectsubscription.ObjectSubscription[downloadTask]
 
 	requestTaskCh   chan chan downloadTask
@@ -58,8 +64,8 @@ func (s *service) newDownloader(sizeLimitBytes int64) *downloader {
 		crossSpaceSubService: s.crossSpaceSubService,
 		objectGetter:         s.objectGetter,
 		sizeLimitBytes:       sizeLimitBytes,
-		handleTask: func(ctx context.Context, t downloadTask) error {
-			return s.DownloadToLocalStore(ctx, t.spaceId, t.fileId, 0)
+		handleTask: func(ctx context.Context, t downloadTask) (int64, error) {
+			return s.downloadFileResumable(ctx, t)
 		},
 		requestTaskCh: make(chan chan downloadTask),
 		addTaskCh:     make(chan downloadTask),
@@ -233,9 +239,33 @@ func (s *downloader) runDownloadWorker() {
 		if !ok {
 			return
 		}
-		err := s.handleTask(s.ctx, task)
+		completed, err := s.handleTask(s.ctx, task)
 		if err != nil {
-			log.Error("auto download file", zap.String("objectId", task.objectId), zap.Error(err))
+			// A failed attempt keeps its confirmed offset and is requeued
+			// with backoff, so a network cut resumes instead of restarting
+			// the file (or silently dropping it, as before).
+			task.attempts++
+			task.resumeOffset = completed
+			if task.attempts > maxDownloadAttempts {
+				log.Error("auto download file: attempts exhausted, dropping task",
+					zap.String("objectId", task.objectId), zap.Error(err))
+				continue
+			}
+			log.Warn("auto download file: will retry",
+				zap.String("objectId", task.objectId),
+				zap.Int("attempt", task.attempts),
+				zap.Int64("resumeOffset", task.resumeOffset),
+				zap.Error(err))
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(downloadRetryDelay(task.attempts)):
+			}
+			select {
+			case <-s.ctx.Done():
+				return
+			case s.addTaskCh <- task:
+			}
 			continue
 		}
 		err = cache.Do(s.objectGetter, task.objectId, func(sb smartblock.SmartBlock) error {

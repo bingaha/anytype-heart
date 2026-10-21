@@ -64,16 +64,19 @@ func TestIndexImage(t *testing.T) {
 		assert.ElementsMatch(t, got.Variants, variants)
 	})
 
-	t.Run("with encryption keys not available", func(t *testing.T) {
+	t.Run("without encryption keys", func(t *testing.T) {
 		fx := newFixture(t)
 		got := testAddImage(t, fx)
 
-		_, err := fx.GetFileVariants(context.Background(), domain.FullFileId{SpaceId: spaceId, FileId: got.FileId}, nil)
-		require.Error(t, err)
+		// 明文存放：无密钥也能读出元数据
+		variants, err := fx.GetFileVariants(context.Background(), domain.FullFileId{SpaceId: spaceId, FileId: got.FileId}, nil)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, got.Variants, variants)
 	})
 }
 
 func TestImageAddWithCustomEncryptionKeys(t *testing.T) {
+	// 明文全量同步：自定义密钥被忽略，图片各变体均明文存放。
 	fx := newFixture(t)
 
 	customKeys := map[string]string{
@@ -170,7 +173,11 @@ func TestReuseWithCorruptedFileInfo(t *testing.T) {
 func assertCustomEncryptionKeys(t *testing.T, fx *fixture, got *AddResult, customKeys map[string]string) {
 	encKeys, err := fx.objectStore.GetFileKeys(got.FileId)
 	require.NoError(t, err)
-	assert.Equal(t, customKeys, encKeys)
+	// 明文全量同步：传入的自定义密钥被忽略，存下的键全为空
+	assert.NotEqual(t, customKeys, encKeys)
+	for path, key := range encKeys {
+		assert.Empty(t, key, "key at path %s should be empty", path)
+	}
 }
 
 func testAddImage(t *testing.T, fx *fixture) *AddResult {

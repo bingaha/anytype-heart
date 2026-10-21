@@ -27,7 +27,10 @@ const (
 	CName                   = "client.pubsub"
 	maxPatternsPerSpace     = 100
 	maxEncryptedPayloadSize = 64 * 1024
-	// MaxPayloadSize leaves room for the Space read key's AES-GCM nonce and tag.
+	// MaxPayloadSize is the client-side payload hint. It keeps the historical
+	// 28-byte allowance for the read key's AES-GCM nonce and tag, so it stays
+	// a conservative bound now that payloads go over the wire as plaintext
+	// (the engine enforces the full 64 KiB on the plaintext itself).
 	MaxPayloadSize = maxEncryptedPayloadSize - 28
 )
 
@@ -42,8 +45,8 @@ var (
 // It keeps a subId-keyed registry of client subscriptions on top of the engine
 // (which refcounts patterns itself) and emits received messages as
 // Event.Pubsub.Message on the event bus. It also implements the engine's
-// client-side deps: payloads are encrypted with the space's current ACL read
-// key (the same key encrypting object changes), inbound LAN subscribers are
+// client-side deps: payloads go over the wire as plaintext (signatures still
+// verified, sender identity still checked), inbound LAN subscribers are
 // gated on space membership, and publishes go to the responsible node plus
 // LAN-discovered peers.
 type Service interface {
@@ -98,11 +101,14 @@ type patternEntry struct {
 
 // EngineDeps returns the engine's client-side dependencies backed by this
 // component. Field access happens at call time, after Init resolved them.
+//
+// 明文全量同步：Crypto 置空，引擎走明文路径（KeyId 为空的载荷直接投递，
+// 签名照常校验）；Membership 保留，入站订阅/发布仍做成员检查。
 func (s *service) EngineDeps() anysyncpubsub.Deps {
 	return anysyncpubsub.Deps{
 		Config:     anysyncpubsub.Config{MaxPatternsPerSpace: maxPatternsPerSpace, MaxPayloadSize: maxEncryptedPayloadSize},
 		Membership: s,
-		Crypto:     s,
+		Crypto:     nil,
 		Peers:      s,
 		OnStatus:   s.onStatus,
 	}

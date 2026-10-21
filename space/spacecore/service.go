@@ -267,9 +267,12 @@ func (s *service) Create(ctx context.Context, spaceType spacedomain.SpaceType, r
 		return nil, fmt.Errorf("generate metadata key: %w", err)
 	}
 	payload := spacepayloads.SpaceCreatePayload{
-		SigningKey:     s.wallet.GetAccountPrivkey(),
-		MasterKey:      s.wallet.GetMasterKey(),
-		ReadKey:        crypto.NewAES(),
+		SigningKey: s.wallet.GetAccountPrivkey(),
+		MasterKey:  s.wallet.GetMasterKey(),
+		// 明文全量同步：新空间不再生成 AES 读密钥。ReadKey 为 nil 时，
+		// ACL 根记录不带加密密钥块（与派生空间同形），Ed25519 身份签名与
+		// 成员表不受影响；新变更以明文（ReadKeyId 为空）落同步存储。
+		ReadKey:        nil,
 		MetadataKey:    metadataPrivKey,
 		SpaceType:      string(spaceType),
 		ReplicationKey: replicationKey,

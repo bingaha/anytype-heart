@@ -302,3 +302,21 @@ func TestSubscriptionReloadOnLimitChange(t *testing.T) {
 		assert.False(t, ok, "expected no SizeInBytes filter after switching to unlimited")
 	})
 }
+
+func TestForkDefaultsFullSync(t *testing.T) {
+	// 明文全量同步 fork 默认：Run 之后自动下载启用、大小不限、不限网络，
+	// 下游订阅不带 SizeInBytes 过滤（订阅过滤逻辑本身不动）。
+	fx := newServiceFixture(t)
+
+	require.NoError(t, fx.Run(context.Background()))
+
+	req := fx.waitForSubscribe(t)
+	_, ok := findSizeFilter(req.Filters)
+	assert.False(t, ok, "expected no SizeInBytes filter under fork defaults")
+
+	fx.lock.Lock()
+	defer fx.lock.Unlock()
+	assert.True(t, fx.isEnabled, "auto download should be enabled by default")
+	assert.False(t, fx.wifiOnly, "download should not be restricted to wifi by default")
+	assert.Zero(t, fx.sizeLimitMb, "size limit should be unlimited (0) by default")
+}

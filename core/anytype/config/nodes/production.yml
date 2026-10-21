@@ -1,4 +1,11 @@
-networkId: N83gJpVd9MuNRZAuJLZ7LiMntTThhPc6DtzWWVjb1M3PouVU
+# Fork network ("myapp" plaintext fork): this file pins OUR OWN subnet identity.
+# The networkId below differs from the official Anytype network, so an official
+# client and a fork client never join each other: the stored-id check in
+# config.GetNodeConfWithError refuses a foreign id with a "network id mismatch"
+# error, and coordinators reject unknown network ids.
+# Operators running their own subnet nodes point ANY_SYNC_NETWORK (or the custom
+# network config path) at their own yml instead of rebuilding with this file.
+networkId: NbRew1RSMhiFXSS1F24kgeh48WT67LqwkHtCAA8i48n4pHBP
 nodes:
   - peerId: 12D3KooWCywWYgfDZmamJxvWKAvMT5AYDdRG8MMhCpYLHjW8aX7K
     addresses:

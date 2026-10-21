@@ -42,9 +42,12 @@ const (
 )
 
 const (
-	SpaceStoreBadgerPath = "spacestore"
-	SpaceStoreSqlitePath = "spaceStore.db"
-	SpaceStoreNewPath    = "spaceStoreNew"
+	// Fork isolation: on-disk store names differ from the official client's,
+	// so a fork data dir never picks up (or clobbers) official stores and
+	// vice versa when both apps run on one machine.
+	SpaceStoreBadgerPath = "plainstore"
+	SpaceStoreSqlitePath = "plainStore.db"
+	SpaceStoreNewPath    = "plainStoreNew"
 )
 
 var (
@@ -427,7 +430,9 @@ func (c *Config) initFromFileAndEnv(repoPath string) error {
 		saveRandomHostAddr := func() error {
 			port, err := getRandomPort()
 			if err != nil {
-				port = 4006
+				// Fork isolation: default gateway port differs from the
+				// official client's 4006 so the two never collide.
+				port = 4106
 				log.Errorf("failed to get random port for gateway, go with the default %d: %s", port, err)
 			}
 			return c.SetHostAddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port))
@@ -644,7 +649,39 @@ func (c *Config) GetNodeConfWithError() (conf nodeconf.Configuration, err error)
 		c.persisted.NetworkId = conf.NetworkId
 		c.mu.Unlock()
 	}
+	// The old network's cached nodeconf (RepoPath/nodeconf/<oldId>*.yml) is
+	// invalid under the new id; drop it so it can never be picked up again.
+	// The active network's cache is rebuilt from the bundled/custom yml on
+	// demand by nodeconfstore. Env override (ANY_SYNC_NETWORK) and custom
+	// config flows still take precedence above — this only cleans the cache.
+	c.pruneStaleNodeConfCache(conf.NetworkId)
 	return
+}
+
+// pruneStaleNodeConfCache removes RepoPath/nodeconf cache files that belong to
+// a network other than activeNetId. nodeconfstore keys its files by network id
+// ("<netId>.yml", "<netId>.e<epoch>.yml"), so after a network switch the old
+// files are dead: the old network's configuration is invalid here, and the
+// active one is rebuilt from the bundled/custom yml on demand. The active
+// network's own cache files are left untouched.
+func (c *Config) pruneStaleNodeConfCache(activeNetId string) {
+	if activeNetId == "" || c.RepoPath == "" {
+		return
+	}
+	dir := c.GetNodeConfStorePath()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, activeNetId) || !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			log.Warnf("failed to remove stale nodeconf cache %s: %v", name, err)
+		}
+	}
 }
 
 func (c *Config) GetNodeConf() (conf nodeconf.Configuration) {

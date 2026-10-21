@@ -346,10 +346,10 @@ func (l *zeroconfDiscovery) startServer() (err error) {
 	ifaces := l.interfacesAddrs.NetInterfaces()
 	l.linkLocal = newLinkLocalIfaces(l.own, ifaces)
 	log.Info("starting mdns server", zap.Strings("ips", l.ipv4), zap.Int("port", l.port), zap.String("peerId", l.peerId),
-		zap.Ints("linkLocalIfaces", l.linkLocal.indexes))
+		zap.Ints("linkLocalIfaces", l.linkLocal.indexes), zap.String("service", EffectiveServiceName()))
 	l.server, err = zeroconf.RegisterProxy(
 		l.peerId,
-		serviceName,
+		EffectiveServiceName(),
 		mdnsDomain,
 		l.port,
 		l.peerId,
@@ -446,7 +446,7 @@ func peerAddrs(entry *zeroconf.ServiceEntry, zones map[string]struct{}) []string
 
 func (l *zeroconfDiscovery) browse(ctx context.Context, closeWait *sync.WaitGroup, ifaces []gonet.Interface, linkLocal linkLocalIfaces, ch chan *zeroconf.ServiceEntry) {
 	defer closeWait.Done()
-	if err := zeroconf.Browse(ctx, serviceName, mdnsDomain, ch,
+	if err := zeroconf.Browse(ctx, EffectiveServiceName(), mdnsDomain, ch,
 		zeroconf.ClientWriteTimeout(time.Second*3),
 		zeroconf.SelectIfaces(ifaces),
 		zeroconf.SelectIPv6Ifaces(linkLocal.indexes...),

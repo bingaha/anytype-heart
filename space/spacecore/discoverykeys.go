@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anyproto/any-sync/commonspace/clientspaceproto"
 	"github.com/anyproto/any-sync/commonspace/object/accountdata"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/commonspace/object/acl/recordverifier"
@@ -120,7 +119,7 @@ func (d *discoveryKeySource) derive(ctx context.Context, spaceId string) ([]byte
 	if !ok || firstKeys.ReadKey == nil {
 		return nil, list.ErrNoReadKey
 	}
-	key, err := clientspaceproto.DeriveDiscoveryKey(firstKeys.ReadKey, spaceId)
+	key, err := deriveDiscoveryKey(firstKeys.ReadKey, spaceId)
 	if err != nil {
 		return nil, fmt.Errorf("derive discovery key: %w", err)
 	}

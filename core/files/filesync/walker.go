@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anyproto/anytype-heart/core/domain"
+	"github.com/anyproto/anytype-heart/core/files/chunkspec"
 )
 
 var errBlockNotFound = errors.New("block not found")
@@ -116,6 +117,67 @@ func (s *fileSync) enumerateFileCids(ctx context.Context, spaceId string, fileId
 		}
 	}
 	return entries, nil
+}
+
+// enumerateUploadCids plans what to push/bind for a file. It wraps
+// enumerateFileCids, except that when a pair directory carries a chunk
+// manifest (see chunkspec), the whole-content block is excluded: it travels
+// as chunks instead — a single block larger than the push batch limit is
+// rejected by the batcher with "block size is too big" and could never be
+// pushed whole — and it is never bound on the node.
+//
+// Deletion (deleteLocalFileBytes in retention.go) intentionally keeps using
+// enumerateFileCids, so every local block — whole and chunks — is reclaimed.
+func (s *fileSync) enumerateUploadCids(ctx context.Context, spaceId string, fileId domain.FileId, priorityBranches []domain.FileId) ([]dagEntry, error) {
+	entries, err := s.enumerateFileCids(ctx, spaceId, fileId, priorityBranches)
+	if err != nil {
+		return nil, err
+	}
+	skip := map[cid.Cid]struct{}{}
+	branchIds := make([]domain.FileId, 0, len(priorityBranches)+1)
+	branchIds = append(branchIds, priorityBranches...)
+	branchIds = append(branchIds, fileId)
+	for _, branchId := range branchIds {
+		branchCid, err := cid.Parse(branchId.String())
+		if err != nil {
+			return nil, fmt.Errorf("parse CID %s: %w", branchId, err)
+		}
+		if err := s.collectChunkedContentCid(ctx, spaceId, branchCid, skip); err != nil {
+			return nil, err
+		}
+	}
+	if len(skip) == 0 {
+		return entries, nil
+	}
+	filtered := entries[:0]
+	for _, e := range entries {
+		if _, ok := skip[e.cid]; !ok {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered, nil
+}
+
+// collectChunkedContentCid records the whole-content CIDs of every
+// chunk-manifest pair directory at or below the branch root (file DAGs nest
+// the pair under an outer directory, see chunkspec.FindManifestPairs).
+// Branches without a manifest (legacy single-block files, foreign DAGs)
+// record nothing.
+func (s *fileSync) collectChunkedContentCid(ctx context.Context, spaceId string, pairCid cid.Cid, skip map[cid.Cid]struct{}) error {
+	node, err := s.getNode(ctx, spaceId, pairCid)
+	if err != nil {
+		return fmt.Errorf("get branch root %s: %w", pairCid, err)
+	}
+	pairs, err := chunkspec.FindManifestPairs(node, func(c cid.Cid) (ipld.Node, error) {
+		return s.getNode(ctx, spaceId, c)
+	}, 2)
+	if err != nil {
+		return fmt.Errorf("find chunk manifests: %w", err)
+	}
+	for _, p := range pairs {
+		skip[p.ContentCid] = struct{}{}
+	}
+	return nil
 }
 
 // childrenAreLeafChunks reports whether every child of the node is provably a

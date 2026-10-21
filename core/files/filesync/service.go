@@ -90,6 +90,12 @@ type FileSync interface {
 	MarkUploaded(objectId string) error
 	OnStatusUpdated(StatusCallback)
 	DeleteFile(objectId string, fileId domain.FullFileId) (err error)
+	// EraseFileNow queues an immediate erase of the file's bytes on the
+	// backup node and locally, skipping the FileBytesRetention window. It
+	// reuses the ordinary deletion chain. Explicit entry point for the
+	// manual "erase now" action (ticket 08 wires the UI button to it via
+	// fileobject.EraseFileData).
+	EraseFileNow(objectId string, fileId domain.FullFileId) (err error)
 	// RequestNodeUsageUpdate asks the node usage updater to refresh soon. It
 	// never blocks: requests made while one is pending coalesce into it.
 	RequestNodeUsageUpdate()

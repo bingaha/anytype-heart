@@ -4749,6 +4749,213 @@ message Rpc {
                 }
             }
         }
+
+        // EraseData 立即擦除：跳过删除保留期，立刻清本地与备份节点字节
+        // （08 号票新增，调 05 号票 fileobject.EraseFileData）。
+        message EraseData {
+            message Request {
+                string spaceId = 1;
+                string objectId = 2;
+            }
+            message Response {
+                Error error = 1;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+    }
+
+    // BackupHealth 明文全量同步的备份健康层（08 号票新增，调 07 号票 backuphealth.Service）。
+    message BackupHealth {
+        message DbCheck {
+            string spaceId = 1;
+            string kind = 2;
+            string path = 3;
+            int64 size = 4;
+            map<string, int64> tables = 5;
+            repeated string mismatches = 6;
+            bool opened = 7;
+            string quickCheck = 8;
+        }
+        message FileCheck {
+            string dir = 1;
+            bool skipped = 2;
+            int32 fileCount = 3;
+            int64 totalBytes = 4;
+            string newestFile = 5;
+            int64 newestSize = 6;
+            int64 newestMtime = 7;
+        }
+        message QuickReport {
+            int64 atUnixMilli = 1;
+            int64 durationMs = 2;
+            bool ok = 3;
+            repeated string failures = 4;
+            repeated DbCheck dbs = 5;
+            FileCheck files = 6;
+        }
+        message DeepDbReport {
+            string spaceId = 1;
+            string kind = 2;
+            string path = 3;
+            int64 size = 4;
+            string integrityCheck = 5;
+            map<string, string> tableHashes = 6;
+        }
+        message DeepFileReport {
+            string dir = 1;
+            bool skipped = 2;
+            int32 fileCount = 3;
+            int64 totalBytes = 4;
+            string rootHex = 5;
+            map<string, string> fileHashes = 6;
+        }
+        message DeepReport {
+            int64 atUnixMilli = 1;
+            int64 durationMs = 2;
+            bool ok = 3;
+            repeated string failures = 4;
+            repeated DeepDbReport dbs = 5;
+            DeepFileReport files = 6;
+        }
+        message SpaceExport {
+            string spaceId = 1;
+            string spaceName = 2;
+            string dir = 3;
+            int32 mdCount = 4;
+            int32 attachmentCount = 5;
+            int64 bytes = 6;
+            string skipped = 7;
+            string error = 8;
+        }
+        message ExportSummary {
+            int64 atUnixMilli = 1;
+            string dest = 2;
+            repeated SpaceExport spaces = 3;
+            int64 durationMs = 4;
+        }
+        message LastReport {
+            message Request {
+            }
+            message Response {
+                Error error = 1;
+                QuickReport quick = 2;
+                DeepReport deep = 3;
+                ExportSummary export = 4;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+        message QuickCheck {
+            message Request {
+            }
+            message Response {
+                Error error = 1;
+                QuickReport report = 2;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+        message DeepVerify {
+            message Request {
+            }
+            message Response {
+                Error error = 1;
+                DeepReport report = 2;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+        message ExportNow {
+            message Request {
+                string destDir = 1;
+            }
+            message Response {
+                Error error = 1;
+                ExportSummary summary = 2;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                        NOT_LOGGED_IN = 101;
+                    }
+                }
+            }
+        }
+    }
+
+    // NetworkPassphrase 整网口令（08 号票新增）：只管门不管盘。前端经
+    // keytar 存取，启动时经 Set 送入后端，同时喂给 04 号票握手加盐与
+    // 01/08 号票发现后缀；Status 只回显有无与发现名，不回显口令。
+    message NetworkPassphrase {
+        message Set {
+            message Request {
+                string passphrase = 1;
+            }
+            message Response {
+                Error error = 1;
+                bool configured = 2;
+                string discoveryServiceName = 3;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
+        message Status {
+            message Request {
+            }
+            message Response {
+                Error error = 1;
+                bool configured = 2;
+                string discoveryServiceName = 3;
+                message Error {
+                    Code code = 1;
+                    string description = 2;
+                    enum Code {
+                        NULL = 0;
+                        UNKNOWN_ERROR = 1;
+                        BAD_INPUT = 2;
+                    }
+                }
+            }
+        }
     }
 
     message Navigation {

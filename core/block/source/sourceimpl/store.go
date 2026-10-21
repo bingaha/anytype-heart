@@ -310,9 +310,11 @@ func (s *store) PushStoreChange(ctx context.Context, params source.PushStoreChan
 	}
 
 	addResult, err := s.ObjectTree.AddContentWithValidator(ctx, objecttree.SignableChangeContent{
-		Data:              data,
-		Key:               s.ObjectTree.AclList().AclState().Key(),
-		ShouldBeEncrypted: true,
+		Data: data,
+		Key:  s.ObjectTree.AclList().AclState().Key(),
+		// 明文全量同步：新变更以明文落同步存储（ReadKeyId 为空即明文变更，
+		// 与 core/debug/exporter 的写法一致）。Ed25519 变更签名不受影响。
+		ShouldBeEncrypted: false,
 		DataType:          dataType,
 		Timestamp:         params.Time.Unix(),
 	}, func(change objecttree.StorageChange) error {

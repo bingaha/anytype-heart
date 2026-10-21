@@ -42,6 +42,7 @@ import (
 	"github.com/anyproto/anytype-heart/core/anytype/account"
 	"github.com/anyproto/anytype-heart/core/anytype/config"
 	"github.com/anyproto/anytype-heart/core/api"
+	"github.com/anyproto/anytype-heart/core/backuphealth"
 	"github.com/anyproto/anytype-heart/core/block"
 	"github.com/anyproto/anytype-heart/core/block/backlinks"
 	"github.com/anyproto/anytype-heart/core/block/bookmark"
@@ -392,7 +393,8 @@ func Bootstrap(a *app.App, components ...app.Component) {
 		Register(anysyncinboxclient.New()).
 		Register(inboxclient.New()).
 		Register(inboxservice.New()).
-		Register(durability.New()) // leave it the last one
+		Register(durability.New()).  // flush first on exit/background
+		Register(backuphealth.New()) // leave it the last one: quickcheck runs after flush
 }
 
 func MiddlewareVersion() string {

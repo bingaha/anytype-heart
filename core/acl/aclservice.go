@@ -35,11 +35,11 @@ import (
 	"time"
 
 	"github.com/anyproto/any-sync/app"
+	"github.com/anyproto/any-sync/commonspace"
 	"github.com/anyproto/any-sync/commonspace/acl/aclclient"
 	"github.com/anyproto/any-sync/commonspace/object/acl/aclrecordproto"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/commonspace/object/acl/recordverifier"
-	"github.com/anyproto/any-sync/consensus/consensusproto/consensuserr"
 	"github.com/anyproto/any-sync/coordinator/coordinatorclient"
 	"github.com/anyproto/any-sync/coordinator/coordinatorproto"
 	"github.com/anyproto/any-sync/identityrepo/identityrepoproto"
@@ -271,19 +271,19 @@ func (a *aclService) Remove(ctx context.Context, spaceId string, identities []cr
 	if err != nil {
 		return convertedOrSpaceErr(err)
 	}
-	newPrivKey, _, err := crypto.GenerateRandomEd25519KeyPair()
+	commonSpace := removeSpace.CommonSpace()
+	// 明文全量同步：成员移除不再轮换读密钥（no-op），只沿用当前读密钥填充
+	// 记录必需的密钥段；签名与成员表语义不变。
+	change, err := currentReadKeyChange(commonSpace)
 	if err != nil {
-		return convertedOrInternalError("generate random key pair", err)
+		return convertedOrInternalError("current read key change", err)
 	}
-	cl := removeSpace.CommonSpace().AclClient()
+	cl := commonSpace.AclClient()
 	a.aclClientLock.Lock()
 	defer a.aclClientLock.Unlock()
 	err = cl.RemoveAccounts(ctx, list.AccountRemovePayload{
 		Identities: identities,
-		Change: list.ReadKeyChangePayload{
-			MetadataKey: newPrivKey,
-			ReadKey:     crypto.NewAES(),
-		},
+		Change:     change,
 	})
 	if err != nil {
 		return convertedOrAclRequestError(err)
@@ -291,59 +291,11 @@ func (a *aclService) Remove(ctx context.Context, spaceId string, identities []cr
 	return nil
 }
 
-// RotateReadKey generates a new space read key when retiring a revoked AnyoneCanJoin invite. It is the
-// invitecleanup.readKeyRotator implementation.
-//
-// It only sends the rotation while the acl head is still expectedHead — the head the cleanup decided
-// the rotation on. If the acl has moved (another device rotated, or any acl change landed), it returns
-// invitecleanup.ErrAclHeadChanged and does nothing, so the rotation is never applied to state that
-// changed under the decision. The record itself carries prevId = the current head, so the coordinator
-// rejects a rotation built on a head it has since advanced past; that rejection maps to the same
-// sentinel.
+// RotateReadKey is a no-op under 明文全量同步：同步载荷已是明文，没有需要
+// 保护的内容密钥，成员签名与成员表不受影响，直接返回成功。
+// It keeps the invitecleanup.readKeyRotator signature so the cleanup pass
+// certifies spaces clean without minting keys.
 func (a *aclService) RotateReadKey(ctx context.Context, spaceId string, expectedHead string) error {
-	sp, err := a.spaceService.Get(ctx, spaceId)
-	if err != nil {
-		return convertedOrSpaceErr(err)
-	}
-	change, err := newReadKeyChange()
-	if err != nil {
-		return convertedOrInternalError("generate read key change", err)
-	}
-	acl := sp.CommonSpace().Acl()
-	cl := sp.CommonSpace().AclClient()
-
-	a.aclClientLock.Lock()
-	defer a.aclClientLock.Unlock()
-
-	acl.RLock()
-	sameHead := acl.Head().Id == expectedHead
-	acl.RUnlock()
-	if !sameHead {
-		return invitecleanup.ErrAclHeadChanged
-	}
-
-	// a bare read-key change, not RevokeAllInvitesAndRotate: the backlog invite is already revoked, and
-	// any invite that is still live is legitimate and must survive — a pure rotation re-keys live
-	// invites and members while excluding the already-revoked ones.
-	acl.Lock()
-	rec, err := acl.RecordBuilder().BuildReadKeyChange(change)
-	acl.Unlock()
-	if err != nil {
-		return convertedOrInternalError("build read key change", err)
-	}
-
-	if err = cl.AddRecord(ctx, rec); err != nil {
-		// the acl head moved between the local head check and the node accepting the record: a local
-		// prev-id mismatch (ErrIncorrectRecordSequence) or the node rejecting a record built on a head
-		// it has advanced past (consensus ErrConflict). Either way the rotation another device most
-		// likely already made stands, and this one is abandoned for the next launch.
-		if errors.Is(err, list.ErrIncorrectRecordSequence) ||
-			errors.Is(err, consensuserr.ErrConflict) ||
-			strings.Contains(err.Error(), "incorrect prev id") {
-			return invitecleanup.ErrAclHeadChanged
-		}
-		return convertedOrAclRequestError(err)
-	}
 	return nil
 }
 
@@ -396,33 +348,35 @@ func (a *aclService) RevokeInvite(ctx context.Context, spaceId string) error {
 	return nil
 }
 
-// revokeAllInvites revokes every invite the space has, rotating the read key when any of them is one
-// anyone can join with. That kind of invite embeds the read key, so revoking it is not enough — the
-// key it handed out has to be rotated away or it keeps decrypting content created after the revocation.
+// revokeAllInvites revokes every invite the space has. Read-key rotation on
+// revoke is a no-op under 明文全量同步 (there is no content key to protect
+// from a revoked AnyoneCanJoin invite), so this is always a plain revoke;
+// live invites are unaffected and signatures/member data stay intact.
 func revokeAllInvites(ctx context.Context, cl aclclient.AclSpaceClient, acl list.AclList) error {
-	if !hasAnyoneCanJoinInvite(acl) {
-		return cl.RevokeAllInvites(ctx)
-	}
-	change, err := newReadKeyChange()
-	if err != nil {
-		return err
-	}
-	return cl.RevokeAllInvitesAndRotate(ctx, change)
+	return cl.RevokeAllInvites(ctx)
 }
 
-// hasAnyoneCanJoinInvite reports whether the space currently offers an invite anyone can join with.
-func hasAnyoneCanJoinInvite(acl list.AclList) bool {
-	acl.RLock()
-	defer acl.RUnlock()
-	return len(acl.AclState().Invites(aclrecordproto.AclInviteType_AnyoneCanJoin)) > 0
-}
-
-func newReadKeyChange() (list.ReadKeyChangePayload, error) {
+// currentReadKeyChange builds the key-change section required inside member
+// removal records, re-using the space's current read key instead of minting a
+// fresh one: the removal lands (signatures and member table intact) while the
+// content key never rotates. The metadata key is still freshly generated, as
+// before — it only wraps member metadata, never content.
+func currentReadKeyChange(commonSpace commonspace.Space) (list.ReadKeyChangePayload, error) {
 	metadataKey, _, err := crypto.GenerateRandomEd25519KeyPair()
 	if err != nil {
 		return list.ReadKeyChangePayload{}, err
 	}
-	return list.ReadKeyChangePayload{MetadataKey: metadataKey, ReadKey: crypto.NewAES()}, nil
+	acl := commonSpace.Acl()
+	acl.RLock()
+	defer acl.RUnlock()
+	readKey, err := acl.AclState().CurrentReadKey()
+	if err != nil {
+		return list.ReadKeyChangePayload{}, err
+	}
+	if readKey == nil {
+		return list.ReadKeyChangePayload{}, list.ErrNoReadKey
+	}
+	return list.ReadKeyChangePayload{MetadataKey: metadataKey, ReadKey: readKey}, nil
 }
 
 // onInviteRevoked hands an invite the acl has just revoked to the cleanup service, which deletes its
@@ -566,16 +520,13 @@ func (a *aclService) StopSharing(ctx context.Context, spaceId string) error {
 	if err != nil {
 		return convertedOrInternalError("get local info", err)
 	}
-	newPrivKey, _, err := crypto.GenerateRandomEd25519KeyPair()
+	change, err := currentReadKeyChange(commonSpace)
 	if err != nil {
-		return convertedOrInternalError("generate random key pair", err)
+		return convertedOrInternalError("current read key change", err)
 	}
 	cl := commonSpace.AclClient()
 	a.aclClientLock.Lock()
-	err = cl.StopSharing(ctx, list.ReadKeyChangePayload{
-		MetadataKey: newPrivKey,
-		ReadKey:     crypto.NewAES(),
-	})
+	err = cl.StopSharing(ctx, change)
 	a.aclClientLock.Unlock()
 	if err != nil {
 		return convertedOrAclRequestError(err)
@@ -909,37 +860,16 @@ func (a *aclService) GenerateInvite(ctx context.Context, spaceId string, invType
 		InviteType:  domain.ConvertInviteType(inviteType),
 	}
 	// ReplaceInvite revokes whatever invite the space has, which happens here whenever the invite type
-	// changes: an invite of the same type would have been returned above instead
+	// changes: an invite of the same type would have been returned above instead.
+	// 明文全量同步：此处不再为替换掉 AnyoneCanJoin 邀请而轮换读密钥（no-op），
+	// 只做普通替换；签名与成员表语义不变。
 	replaces := current.InviteFileCid != ""
 
 	// the lock is released before the invite is reported as revoked: onInviteRevoked reaches the tech
 	// space and the file node, and aclClientLock serializes every acl operation of every space
-	var revokedEarly bool
 	result, err = func() (domain.InviteInfo, error) {
 		a.aclClientLock.Lock()
 		defer a.aclClientLock.Unlock()
-		// an anyone-can-join invite embeds the read key. Before replacing it, revoke it and rotate, so the
-		// key it handed out cannot read what the new invite's members go on to write. ReplaceInvite cannot
-		// do this in one record — a new invite in the same record would embed the pre-rotation key — so it
-		// is a separate record, and the ReplaceInvite below then has nothing left to revoke.
-		if hasAnyoneCanJoinInvite(acl) {
-			change, err := newReadKeyChange()
-			if err != nil {
-				return domain.InviteInfo{}, convertedOrInternalError("generate read key change", err)
-			}
-			if err := aclClient.RevokeAllInvitesAndRotate(ctx, change); err != nil {
-				return domain.InviteInfo{}, convertedOrInternalError("revoke and rotate invites", err)
-			}
-			revokedEarly = true
-			// The invite the details point at is revoked as of the record above, so clear them before the
-			// new invite's round trips rather than after: should anything below fail, GetCurrent then
-			// answers "no invite" instead of advertising a dead link, and a retry falls past the
-			// early-return above and generates cleanly. Best effort — on success setInviteInfo overwrites
-			// the details anyway, and a failed clear merely leaves the window this shrinks.
-			if _, err := a.inviteService.RemoveExisting(ctx, spaceId); err != nil {
-				log.Warn("clear details of a replaced invite", zap.String("spaceId", spaceId), zap.Error(err))
-			}
-		}
 		res, err := aclClient.ReplaceInvite(ctx, invitePayload)
 		if err != nil {
 			return domain.InviteInfo{}, convertedOrInternalError("couldn't generate acl invite", err)
@@ -958,10 +888,9 @@ func (a *aclService) GenerateInvite(ctx context.Context, spaceId string, invType
 			return nil
 		})
 	}()
-	// on success the old invite is revoked by ReplaceInvite; on a mid-flight failure it is revoked all
-	// the same when the rotation record went through first — report it either way, so its file is
+	// on success the old invite is revoked by ReplaceInvite — report it so its file is
 	// deleted now rather than by the next launch's sweep
-	if replaces && (err == nil || revokedEarly) {
+	if replaces && err == nil {
 		a.onInviteRevoked(ctx, spaceId, current)
 	}
 	return result, err

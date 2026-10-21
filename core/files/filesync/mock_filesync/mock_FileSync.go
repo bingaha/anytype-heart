@@ -258,6 +258,53 @@ func (_c *MockFileSync_DeleteFile_Call) RunAndReturn(run func(string, domain.Ful
 	return _c
 }
 
+// EraseFileNow provides a mock function with given fields: objectId, fileId
+func (_m *MockFileSync) EraseFileNow(objectId string, fileId domain.FullFileId) error {
+	ret := _m.Called(objectId, fileId)
+
+	if len(ret) == 0 {
+		panic("no return value specified for EraseFileNow")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, domain.FullFileId) error); ok {
+		r0 = rf(objectId, fileId)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockFileSync_EraseFileNow_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'EraseFileNow'
+type MockFileSync_EraseFileNow_Call struct {
+	*mock.Call
+}
+
+// EraseFileNow is a helper method to define mock.On call
+//   - objectId string
+//   - fileId domain.FullFileId
+func (_e *MockFileSync_Expecter) EraseFileNow(objectId interface{}, fileId interface{}) *MockFileSync_EraseFileNow_Call {
+	return &MockFileSync_EraseFileNow_Call{Call: _e.mock.On("EraseFileNow", objectId, fileId)}
+}
+
+func (_c *MockFileSync_EraseFileNow_Call) Run(run func(objectId string, fileId domain.FullFileId)) *MockFileSync_EraseFileNow_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(domain.FullFileId))
+	})
+	return _c
+}
+
+func (_c *MockFileSync_EraseFileNow_Call) Return(err error) *MockFileSync_EraseFileNow_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockFileSync_EraseFileNow_Call) RunAndReturn(run func(string, domain.FullFileId) error) *MockFileSync_EraseFileNow_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Init provides a mock function with given fields: a
 func (_m *MockFileSync) Init(a *app.App) error {
 	ret := _m.Called(a)

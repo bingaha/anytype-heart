@@ -163,7 +163,7 @@ func (l *providerDiscovery) Start() (err error) {
 	if provider == nil {
 		return
 	}
-	provider.Provide(l, l.drpcServer.Port(), l.peerId, serviceName)
+	provider.Provide(l, l.drpcServer.Port(), l.peerId, EffectiveServiceName())
 	// the platform withdraws our registration on background, so the LAN port
 	// may close with it (GO-7577; a no-op where the listener has no lifecycle)
 	if pauser, ok := l.drpcServer.(backgroundPauser); ok {

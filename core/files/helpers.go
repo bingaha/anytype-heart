@@ -8,6 +8,7 @@ import (
 	"github.com/anyproto/any-sync/commonfile/fileblockstore"
 	"github.com/anyproto/any-sync/commonfile/fileservice"
 	ufsio "github.com/ipfs/boxo/ipld/unixfs/io"
+	"github.com/ipfs/boxo/ipld/merkledag"
 	"github.com/ipfs/boxo/path"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
@@ -27,13 +28,19 @@ func (s *service) dagServiceForSpace(spaceID string, customFileHandler *fileserv
 }
 
 func (s *service) addFileData(ctx context.Context, spaceID string, r io.Reader, fileHandler *fileservice.FileHandler) (ipld.Node, error) {
-	// Use custom FileHandler if provided, otherwise use default
-	if fileHandler != nil {
-		cctx := fileblockstore.CtxWithSpaceId(ctx, spaceID)
-		return fileHandler.AddFile(cctx, r)
+	// 明文全量同步：文件内容（与元数据）以整文件一块明文存放，不再按 unixfs 切分。
+	// 整块以 raw codec 单块写入本地块存储；读取经由统一的 dagServiceForSpace，
+	// 下游（GetFile/DagReader、filesync walker、offloader 链 walk）均兼容 raw 叶子。
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read file data: %w", err)
 	}
-	cctx := fileblockstore.CtxWithSpaceId(ctx, spaceID)
-	return s.commonFile.AddFile(cctx, r)
+	node := merkledag.NewRawNode(data)
+	dagService := s.dagServiceForSpace(spaceID, fileHandler)
+	if err := dagService.Add(ctx, node); err != nil {
+		return nil, fmt.Errorf("add raw block: %w", err)
+	}
+	return node, nil
 }
 
 func (s *service) getFile(ctx context.Context, spaceID string, c cid.Cid) (ufsio.ReadSeekCloser, error) {

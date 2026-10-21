@@ -21,6 +21,11 @@ var errNoReadKey = errors.New("no read key for key id")
 // Encrypt implements anysyncpubsub.Crypto: payloads are encrypted with the
 // space's current ACL read key — the same key object-tree changes are
 // encrypted with — carrying its id for the receiver's key lookup.
+//
+// NOTE (明文全量同步): the engine is now wired with Crypto == nil, so this
+// method is no longer on the publish path; publishes go out as plaintext with
+// an empty key id (signatures still apply). It is kept for tests and for
+// interoperating with historical ciphertext.
 func (s *service) Encrypt(spaceId string, payload []byte) (keyId string, encrypted []byte, err error) {
 	sp, err := s.spaceCore.Get(s.ctx, spaceId)
 	if err != nil {
@@ -50,6 +55,12 @@ func (s *service) Encrypt(spaceId string, payload []byte) (keyId string, encrypt
 // Decrypt implements anysyncpubsub.Crypto: keyId resolves to a historical read
 // key held in the ACL state, so messages encrypted just before a key rotation
 // still decrypt.
+//
+// NOTE (明文全量同步): same as Encrypt — off the receive path while the
+// engine runs with Crypto == nil (plaintext frames carry no key id and never
+// reach here; frames that do carry one are dropped by the engine). A missing
+// key still errors; callers must not fall back to treating ciphertext as
+// plaintext.
 func (s *service) Decrypt(spaceId, keyId string, encrypted []byte) ([]byte, error) {
 	sp, err := s.spaceCore.Get(s.ctx, spaceId)
 	if err != nil {

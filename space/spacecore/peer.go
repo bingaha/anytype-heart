@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"go.uber.org/zap"
 	"storj.io/drpc"
 
 	"github.com/anyproto/any-sync/app"
@@ -81,13 +80,14 @@ func (s *service) PeerDiscovered(ctx context.Context, discovered localdiscovery.
 	s.publishLocalPeer(discovered.PeerId, shared, proof, directionOutbound)
 }
 
-// exchangeOutbound is the outbound handshake with one LAN peer: the v2 token
-// exchange over the request list (disk plus the derived tech space), with the
-// v1 fallback for peers that predate v2. own may be nil (re-exchange before
-// local discovery reported our addresses): the peer then answers without
-// recording us. The same function serves discovery and re-exchange, so the
-// two cannot drift. proof is true for a v2 result: its tokens are keyed
-// proofs, while v1 is a plaintext list that proves nothing.
+// exchangeOutbound is the outbound handshake with one LAN peer: the admission
+// handshake over the request list (disk plus the derived tech space). own may
+// be nil (re-exchange before local discovery reported our addresses): the
+// peer then answers without recording us. The same function serves discovery
+// and re-exchange, so the two cannot drift. proof is always true: every token
+// is a member-signature proof, and an empty intersection answers nothing.
+// There is no v1 fallback: the legacy plaintext handshake hands our full
+// space id list to whoever asks, which the admission gate exists to prevent.
 func (s *service) exchangeOutbound(ctx context.Context, peerId string, own *localdiscovery.OwnAddresses) (shared []string, proof bool, err error) {
 	unaryPeer, err := s.poolManager.UnaryPeerPool().Get(ctx, peerId)
 	if err != nil {
@@ -103,30 +103,33 @@ func (s *service) exchangeOutbound(ctx context.Context, peerId string, own *loca
 	}
 	shared, err = s.spaceExchangeV2(ctx, unaryPeer, peerId, allIds, localServer)
 	if err != nil {
-		// a peer that predates v2 fails the call; fall back so LAN discovery
-		// keeps working across a mixed-version rollout
-		log.Debug("space exchange v2, falling back to v1", zap.String("peerId", peerId), zap.Error(err))
-		if shared, err = s.spaceExchangeV1(ctx, unaryPeer, allIds, localServer); err != nil {
-			return nil, false, err
-		}
-		return shared, false, nil
+		return nil, false, err
 	}
 	return shared, true, nil
 }
 
-// spaceExchangeV2 runs the token handshake: send one membership token per
-// space we can derive a discovery key for, padded and sorted so the true space
-// count stays hidden, then match the peer's proof tokens back to our own
-// spaces. Neither side ever transmits a space id.
+// spaceExchangeV2 runs the admission handshake: send one member-signature
+// token per space we hold (account key over salt || req || peer pair ||
+// spaceId, padded and sorted so the true space count stays hidden), then
+// match the peer's proof tokens back to our own spaces via our member lists.
+// The salt binds the network passphrase, our NetworkId and the fresh nonce,
+// so a peer with another passphrase or NetworkId — or no membership —
+// verifies nothing and the intersection comes back empty. Neither side ever
+// transmits a space id.
 func (s *service) spaceExchangeV2(ctx context.Context, unaryPeer peer.Peer, peerId string, allIds []string, localServer *clientspaceproto.LocalServer) ([]string, error) {
 	nonce, err := clientspaceproto.NewNonceV2()
 	if err != nil {
 		return nil, fmt.Errorf("nonce: %w", err)
 	}
+	// the gate first: without a passphrase (or with a NetworkId we cannot
+	// bind) there is nothing to prove and nothing is sent.
+	salt, err := s.admissionSaltFor(nonce)
+	if err != nil {
+		return nil, err
+	}
 	selfPeerId := s.wallet.GetDevicePrivkey().GetPublic().PeerId()
-	keys := s.discoveryKeys.DiscoveryKeys(ctx, allIds)
 	// we are the caller, so the pair is ordered (us, them)
-	tokens, err := requestTokens(allIds, keys, nonce, selfPeerId, peerId)
+	tokens, err := requestMemberTokens(allIds, s.wallet.GetAccountPrivkey(), salt, selfPeerId, peerId)
 	if err != nil {
 		return nil, fmt.Errorf("build request tokens: %w", err)
 	}
@@ -143,26 +146,8 @@ func (s *service) spaceExchangeV2(ctx context.Context, unaryPeer peer.Peer, peer
 	if err != nil {
 		return nil, fmt.Errorf("space exchange v2: %w", err)
 	}
-	return matchProofs(allIds, keys, resp.SpaceTokens, nonce, selfPeerId, peerId), nil
-}
-
-// spaceExchangeV1 is the legacy plaintext handshake, kept only to reach peers
-// that predate SpaceExchangeV2. It hands our full space id list to whoever
-// asks, so it is never attempted before v2.
-func (s *service) spaceExchangeV1(ctx context.Context, unaryPeer peer.Peer, allIds []string, localServer *clientspaceproto.LocalServer) ([]string, error) {
-	var resp *clientspaceproto.SpaceExchangeResponse
-	err := unaryPeer.DoDrpc(ctx, func(conn drpc.Conn) error {
-		var dErr error
-		resp, dErr = clientspaceproto.NewDRPCClientSpaceClient(conn).SpaceExchange(ctx, &clientspaceproto.SpaceExchangeRequest{
-			SpaceIds:    allIds,
-			LocalServer: localServer,
-		})
-		return dErr
-	})
-	if err != nil {
-		return nil, fmt.Errorf("space exchange: %w", err)
-	}
-	return resp.SpaceIds, nil
+	memberKeys := s.admissionMemberKeys(ctx, allIds)
+	return matchMemberProofs(allIds, memberKeys, resp.SpaceTokens, salt, selfPeerId, peerId), nil
 }
 
 // localServerOf describes this device's listening endpoint to a LAN peer

@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"sync/atomic"
@@ -109,13 +110,17 @@ func newCryptoService(t *testing.T) (*service, *testSpaceCore, *accountdata.Acco
 }
 
 // Feed an actual signed wire frame through the released engine's inbound path.
-func receiveEncrypted(t *testing.T, engine anysyncpubsub.Service, acc *accountdata.AccountKeys, keyID string, payload []byte) {
+// A plaintext frame carries an empty key id; an encrypted (historical) frame
+// carries the key id it was encrypted under.
+func receiveFrame(t *testing.T, engine anysyncpubsub.Service, acc *accountdata.AccountKeys, keyID string, payload []byte) {
 	t.Helper()
 	frame := &pubsubproto.Publish{
 		SpaceId: testSpaceId, Topic: "typing/object", MsgId: make([]byte, 16),
 		KeyId: keyID, Payload: payload, TimestampMilli: time.Now().UnixMilli(),
 	}
 	var err error
+	_, err = rand.Read(frame.MsgId)
+	require.NoError(t, err)
 	frame.Identity, err = acc.SignKey.GetPublic().Marshall()
 	require.NoError(t, err)
 	data := []byte("anysync:pubsub:v1")
@@ -133,6 +138,12 @@ func receiveEncrypted(t *testing.T, engine anysyncpubsub.Service, acc *accountda
 	require.NoError(t, handler.HandleMessage(context.Background(), "remote", &pubsubproto.PubSubMessage{
 		Content: &pubsubproto.PubSubMessage_Publish{Publish: frame},
 	}))
+}
+
+// receiveEncrypted keeps the old name for the historical-ciphertext case.
+func receiveEncrypted(t *testing.T, engine anysyncpubsub.Service, acc *accountdata.AccountKeys, keyID string, payload []byte) {
+	t.Helper()
+	receiveFrame(t, engine, acc, keyID, payload)
 }
 
 func nextPubsubEvent(t *testing.T, events testEvents) *pb.EventPubsubMessage {
@@ -154,23 +165,39 @@ func TestSubscribeLoadsColdSpaceForInboundDelivery(t *testing.T) {
 	_, err := s.Subscribe(context.Background(), testSpaceId, []string{"typing/object"}, "sub")
 	require.NoError(t, err)
 	require.EqualValues(t, 1, core.loads.Load())
-	keyID, encrypted, err := s.Encrypt(testSpaceId, []byte("hello"))
-	require.NoError(t, err)
-	receiveEncrypted(t, s.engine, acc, keyID, encrypted)
+	// 明文全量同步：发布走明文（本地回显即明文）。
+	require.NoError(t, s.Publish(context.Background(), testSpaceId, "typing/object", []byte("hello")))
 	message := nextPubsubEvent(t, events)
 	require.Equal(t, []byte("hello"), message.Payload)
 	require.Equal(t, []string{"sub"}, message.SubIds)
+	// 明文全量同步：带签名的明文远端帧（KeyId 为空）直投，发送者身份照常校验。
+	receiveFrame(t, s.engine, acc, "", []byte("remote hello"))
+	message = nextPubsubEvent(t, events)
+	require.Equal(t, []byte("remote hello"), message.Payload)
+	require.Equal(t, acc.SignKey.GetPublic().Account(), message.Identity)
+	require.Equal(t, []string{"sub"}, message.SubIds)
+	// 老密文帧（KeyId 非空）在明文引擎上不再可读：直接丢弃，不投递。
+	keyID, encrypted, err := s.Encrypt(testSpaceId, []byte("old secret"))
+	require.NoError(t, err)
+	require.NotEmpty(t, keyID)
+	receiveEncrypted(t, s.engine, acc, keyID, encrypted)
+	select {
+	case ev := <-events.ch:
+		t.Fatalf("historical ciphertext must be dropped, got %v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
-func TestEncryptedPayloadBoundary(t *testing.T) {
-	for _, size := range []int{65508, 65509, 65536} {
+func TestPlaintextPayloadBoundary(t *testing.T) {
+	// 明文路径下引擎按 64 KiB 裸载荷限流，不再有 28 字节加密开销。
+	for _, size := range []int{65536, 65537} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			s, _, acc, events := newCryptoService(t)
+			s, _, _, events := newCryptoService(t)
 			_, err := s.Subscribe(context.Background(), testSpaceId, []string{"typing/object"}, "sub")
 			require.NoError(t, err)
 			payload := make([]byte, size)
 			err = s.Publish(context.Background(), testSpaceId, "typing/object", payload)
-			if size > 65508 {
+			if size > 65536 {
 				require.ErrorIs(t, err, pubsubproto.ErrInvalidMessage)
 				select {
 				case <-events.ch:
@@ -180,11 +207,6 @@ func TestEncryptedPayloadBoundary(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, payload, nextPubsubEvent(t, events).Payload)
-			keyID, encrypted, err := s.Encrypt(testSpaceId, payload)
-			require.NoError(t, err)
-			require.Len(t, encrypted, 65536)
-			receiveEncrypted(t, s.engine, acc, keyID, encrypted)
 			require.Equal(t, payload, nextPubsubEvent(t, events).Payload)
 		})
 	}

@@ -409,10 +409,12 @@ func (s *treeSource) PushChange(params source.PushChangeParams) (id string, err 
 	}
 
 	addResult, err := s.ObjectTree.AddContent(context.Background(), objecttree.SignableChangeContent{
-		Data:              data,
-		Key:               s.ObjectTree.AclList().AclState().Key(),
+		Data: data,
+		Key:  s.ObjectTree.AclList().AclState().Key(),
+		// 明文全量同步：新变更以明文落同步存储（ReadKeyId 为空即明文变更，
+		// 与 core/debug/exporter 的写法一致）。Ed25519 变更签名不受影响。
+		ShouldBeEncrypted: false,
 		IsSnapshot:        change.Snapshot != nil,
-		ShouldBeEncrypted: true,
 		DataType:          dataType,
 		Timestamp:         params.Time.Unix(),
 	})

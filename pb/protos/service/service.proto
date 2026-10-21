@@ -216,6 +216,15 @@ service ClientCommands {
     rpc FileCacheDownload (anytype.Rpc.File.CacheDownload.Request) returns (anytype.Rpc.File.CacheDownload.Response);
     rpc FileCacheCancelDownload (anytype.Rpc.File.CacheCancelDownload.Request) returns (anytype.Rpc.File.CacheCancelDownload.Response);
     rpc FileAutoDownloadSetLimit (anytype.Rpc.File.AutoDownloadSetLimit.Request) returns (anytype.Rpc.File.AutoDownloadSetLimit.Response);
+    rpc FileEraseData (anytype.Rpc.File.EraseData.Request) returns (anytype.Rpc.File.EraseData.Response);
+
+    rpc BackupHealthLastReport (anytype.Rpc.BackupHealth.LastReport.Request) returns (anytype.Rpc.BackupHealth.LastReport.Response);
+    rpc BackupHealthQuickCheck (anytype.Rpc.BackupHealth.QuickCheck.Request) returns (anytype.Rpc.BackupHealth.QuickCheck.Response);
+    rpc BackupHealthDeepVerify (anytype.Rpc.BackupHealth.DeepVerify.Request) returns (anytype.Rpc.BackupHealth.DeepVerify.Response);
+    rpc BackupHealthExportNow (anytype.Rpc.BackupHealth.ExportNow.Request) returns (anytype.Rpc.BackupHealth.ExportNow.Response);
+
+    rpc NetworkPassphraseSet (anytype.Rpc.NetworkPassphrase.Set.Request) returns (anytype.Rpc.NetworkPassphrase.Set.Response);
+    rpc NetworkPassphraseStatus (anytype.Rpc.NetworkPassphrase.Status.Request) returns (anytype.Rpc.NetworkPassphrase.Status.Response);
 
     rpc NavigationListObjects (anytype.Rpc.Navigation.ListObjects.Request) returns (anytype.Rpc.Navigation.ListObjects.Response);
     rpc NavigationGetObjectInfoWithLinks (anytype.Rpc.Navigation.GetObjectInfoWithLinks.Request) returns (anytype.Rpc.Navigation.GetObjectInfoWithLinks.Response);

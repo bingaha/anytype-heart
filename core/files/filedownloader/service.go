@@ -119,10 +119,12 @@ func (s *service) Init(a *app.App) error {
 }
 
 func (s *service) Run(ctx context.Context) error {
-	enabled := s.config.AutoDownloadFiles()
-	wifiOnly := s.config.AutoDownloadOnWifiOnly()
-	sizeLimitMb := s.config.AutoDownloadSizeLimitMb()
-	s.setDownloadState(enabled, wifiOnly, sizeLimitMb)
+	// 明文全量同步 fork 默认：全量节点默认全下——自动下载启用、大小不限（0 即
+	// 不限，下游订阅在 limit<=0 时不加大小过滤）、不限网络（wifiOnly=false，
+	// networkStateChanged 不会按网络停下下载器）。用户经 SetEnabled/SetSizeLimit
+	// 的显式修改在本次运行即时生效并持久化；重启后回到 fork 默认。
+	// （订阅过滤条件本身不动，见 downloader.runSubscription。）
+	s.setDownloadState(true, false, 0)
 	for range 5 {
 		go s.cacheWarmer.runWorker()
 	}

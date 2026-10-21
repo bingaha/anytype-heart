@@ -502,10 +502,11 @@ func (r *blocksAvailabilityResponse) orderedCids(set map[cid.Cid]struct{}) []cid
 	return out
 }
 
-// checkBlocksAvailability enumerates the file's cids (without requiring its
-// data to be present locally, see enumerateFileCids) and asks the file node
-// which of them it already has: those are bound to the space, the rest are
-// uploaded from the local store.
+// checkBlocksAvailability enumerates the file's upload cids (without requiring
+// its data to be present locally, see enumerateUploadCids) and asks the file
+// node which of them it already has: those are bound to the space, the rest
+// are uploaded from the local store. Chunk-manifest files enumerate chunks,
+// never the whole-content block.
 func (s *fileSync) checkBlocksAvailability(ctx context.Context, info FileInfo) (*blocksAvailabilityResponse, error) {
 	if len(info.CidsToBind) > 0 || len(info.CidsToUpload) > 0 {
 		return &blocksAvailabilityResponse{
@@ -515,7 +516,7 @@ func (s *fileSync) checkBlocksAvailability(ctx context.Context, info FileInfo) (
 		}, nil
 	}
 
-	entries, err := s.enumerateFileCids(ctx, info.SpaceId, info.FileId, info.Variants)
+	entries, err := s.enumerateUploadCids(ctx, info.SpaceId, info.FileId, info.Variants)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate file cids: %w", err)
 	}

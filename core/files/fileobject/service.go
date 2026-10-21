@@ -7,7 +7,7 @@ Name: File Object Lifecycle Manager
 Scope: global
 
 ## Responsibility
-- Create file objects from raw IPFS file data with encryption keys
+- Create file objects from raw file data (stored as plaintext, no encryption keys)
 - Index file metadata (mime type, dimensions, etc.) into object details
 - Migrate legacy file IDs to file object IDs in blocks and details
 - Manage file sync queue integration for upload/download
@@ -91,6 +91,11 @@ type Service interface {
 	InitEmptyFileState(st *state.State)
 	CanDeleteFile(ctx context.Context, objectId string) error
 	DeleteFileData(spaceId string, objectId string) error
+	// EraseFileData immediately erases the file's bytes on the backup node
+	// and locally, skipping the deletion retention window. Explicit entry
+	// point for the manual "erase now" action (ticket 08 wires the UI
+	// button to it, e.g. via a new middleware RPC).
+	EraseFileData(spaceId string, objectId string) error
 	Create(ctx context.Context, spaceId string, req filemodels.CreateRequest) (id string, object *domain.Details, err error)
 	CreateFromImport(fileId domain.FullFileId, origin objectorigin.ObjectOrigin, additionalDetails *domain.Details) (string, error)
 	GetFileIdFromObject(objectId string) (domain.FullFileId, error)
@@ -503,7 +508,8 @@ func (s *service) makeInitialDetails(fileId domain.FileId, origin objectorigin.O
 	return details
 }
 
-// CreateFromImport creates file object from imported raw IPFS file. Encryption keys for this file should exist in file store.
+// CreateFromImport creates file object from imported raw file. Files are stored
+// as plaintext, so missing local key entries are tolerated.
 func (s *service) CreateFromImport(fileId domain.FullFileId, origin objectorigin.ObjectOrigin, additionalDetails *domain.Details) (string, error) {
 	// Check that fileId is not a file object id
 	recs, _, err := s.objectStore.SpaceIndex(fileId.SpaceId).QueryObjectIds(database.Query{
@@ -528,9 +534,12 @@ func (s *service) CreateFromImport(fileId domain.FullFileId, origin objectorigin
 	if err == nil {
 		return fileObjectId, nil
 	}
+	// 明文全量同步：文件无加密密钥。历史数据可能残留密钥，能取则带上，
+	// 取不到（同步来的文件常见）也不报错，直接按明文建对象。
 	keys, err := s.objectStore.GetFileKeys(fileId.FileId)
 	if err != nil {
-		return "", fmt.Errorf("get file keys: %w", err)
+		log.Warnf("get file keys for %s: %v; create file object without keys", fileId.FileId.String(), err)
+		keys = nil
 	}
 	fileObjectId, _, err = s.Create(context.Background(), fileId.SpaceId, filemodels.CreateRequest{
 		FileId:                fileId.FileId,
@@ -650,9 +659,11 @@ func (s *service) GetImageData(ctx context.Context, objectId string) (files.Imag
 }
 
 func (s *service) GetImageDataFromRawId(ctx context.Context, fileId domain.FileId) (files.Image, error) {
+	// 明文全量同步：无密钥即按明文读；同步来的文件本地本就没有密钥条目。
 	keys, err := s.objectStore.GetFileKeys(fileId)
 	if err != nil {
-		return nil, fmt.Errorf("get file keys: %w", err)
+		log.Warnf("get file keys for %s: %v; read image without keys", fileId.String(), err)
+		keys = nil
 	}
 
 	fullId := domain.FullFileId{
@@ -731,6 +742,53 @@ func (s *service) DeleteFileData(spaceId string, objectId string) error {
 
 		if err := s.fileSync.DeleteFile(objectId, fullId); err != nil {
 			return fmt.Errorf("failed to remove file from sync: %w", err)
+		}
+		// Local blocks are NOT offloaded here: they are reclaimed by the
+		// filesync deleter once the byte retention window ends, together
+		// with the backup node copy, so the bytes stay recoverable until
+		// then. See filesync.FileBytesRetention.
+		return nil
+	}
+	return nil
+}
+
+// EraseFileData skips the deletion retention window and erases the file's
+// bytes at once: the backup node copy via the filesync immediate-erase path
+// and the local blocks via the offloader. The index tombstone is still
+// written by the ordinary object deletion flow, so the object disappears
+// from lists immediately either way.
+//
+// Files shared with other objects are left alone, exactly like DeleteFileData.
+func (s *service) EraseFileData(spaceId string, objectId string) error {
+	fullId, err := s.GetFileIdFromObject(objectId)
+	if err != nil {
+		return fmt.Errorf("get file id from object: %w", err)
+	}
+	records, err := s.objectStore.QueryCrossSpace(s.componentCtx, database.Query{
+		Filters: []database.FilterRequest{
+			{
+				RelationKey: bundle.RelationKeyId,
+				Condition:   model.BlockContentDataviewFilter_NotEqual,
+				Value:       domain.String(objectId),
+			},
+			{
+				RelationKey: bundle.RelationKeyFileId,
+				Condition:   model.BlockContentDataviewFilter_Equal,
+				Value:       domain.String(fullId.FileId.String()),
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("list objects that use file id: %w", err)
+	}
+	if len(records) == 0 {
+		err := s.CanDeleteFile(s.componentCtx, objectId)
+		if err != nil {
+			return fmt.Errorf("can delete a file: %w", err)
+		}
+
+		if err := s.fileSync.EraseFileNow(objectId, fullId); err != nil {
+			return fmt.Errorf("failed to erase file from sync: %w", err)
 		}
 		_, err = s.fileOffloader.FileOffloadFullId(context.Background(), domain.FullID{SpaceID: spaceId, ObjectID: objectId}, true)
 		if err != nil {

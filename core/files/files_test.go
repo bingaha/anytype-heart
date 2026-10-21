@@ -99,13 +99,15 @@ func TestFileAdd(t *testing.T) {
 
 	})
 
-	t.Run("expect that encrypted content stored in DAG", func(t *testing.T) {
+	t.Run("expect that plaintext content stored in DAG", func(t *testing.T) {
 		contentCid := cid.MustParse(variantCid)
-		encryptedContent, err := fx.commonFileService.GetFile(ctx, contentCid)
+		// 整文件一块：内容块为 raw codec 单块
+		require.Equal(t, uint64(cid.Raw), contentCid.Prefix().Codec)
+		plainContent, err := fx.commonFileService.GetFile(ctx, contentCid)
 		require.NoError(t, err)
-		gotEncryptedContent, err := io.ReadAll(encryptedContent)
+		gotPlainContent, err := io.ReadAll(plainContent)
 		require.NoError(t, err)
-		assert.NotEqual(t, testFileContent, string(gotEncryptedContent))
+		assert.Equal(t, testFileContent, string(gotPlainContent))
 	})
 }
 
@@ -141,13 +143,15 @@ func TestIndexFile(t *testing.T) {
 		assertFileMeta(t, fileResult, file)
 	})
 
-	t.Run("with encryption keys not available", func(t *testing.T) {
+	t.Run("without encryption keys", func(t *testing.T) {
 		fx := newFixture(t)
 
 		fileResult := testAddFile(t, fx)
 
-		_, err := fx.GetFileVariants(context.Background(), domain.FullFileId{FileId: fileResult.FileId, SpaceId: spaceId}, nil)
-		require.Error(t, err)
+		// 明文存放：无密钥也能读出元数据
+		variants, err := fx.GetFileVariants(context.Background(), domain.FullFileId{FileId: fileResult.FileId, SpaceId: spaceId}, nil)
+		require.NoError(t, err)
+		assertFileMeta(t, fileResult, variants)
 	})
 }
 
@@ -166,36 +170,10 @@ func assertFileMeta(t *testing.T, fileResult *AddResult, variants []*storage.Fil
 }
 
 func TestFileAddWithCustomKeys(t *testing.T) {
-	t.Run("with valid keys expect use them", func(t *testing.T) {
-		fx := newFixture(t)
-		ctx := context.Background()
-
-		uploaded := make(chan struct{})
-		close(uploaded)
-
-		lastModifiedDate := time.Now()
-		buf := strings.NewReader(testFileContent)
-
-		customKeys := map[string]string{
-			encryptionKeyPath(schema.LinkFile): "bweokjjonr756czpdoymdfwzromqtqb27z44tmcb2vv322y2v62ja",
-		}
-
-		opts := []AddOption{
-			WithName(testFileName),
-			WithLastModifiedDate(lastModifiedDate.Unix()),
-			WithReader(buf),
-			WithCustomEncryptionKeys(customKeys),
-		}
-		got, err := fx.FileAdd(ctx, spaceId, opts...)
-		require.NoError(t, err)
-		assert.NotEmpty(t, got.FileId)
-		got.Commit()
-
-		assertCustomEncryptionKeys(t, fx, got, customKeys)
-	})
-
-	t.Run("with invalid keys expect generate new ones", func(t *testing.T) {
+	// 明文全量同步：传入的自定义加密密钥一律忽略，内容始终明文存放，Key 留空。
+	t.Run("custom keys are ignored, content stays plaintext", func(t *testing.T) {
 		for i, customKeys := range []map[string]string{
+			{encryptionKeyPath(schema.LinkFile): "bweokjjonr756czpdoymdfwzromqtqb27z44tmcb2vv322y2v62ja"},
 			nil,
 			{"invalid": "key"},
 			{encryptionKeyPath(schema.LinkFile): "not-an-aes-key"},
@@ -203,9 +181,6 @@ func TestFileAddWithCustomKeys(t *testing.T) {
 			t.Run(fmt.Sprintf("case %d", i+1), func(t *testing.T) {
 				fx := newFixture(t)
 				ctx := context.Background()
-
-				uploaded := make(chan struct{})
-				close(uploaded)
 
 				lastModifiedDate := time.Now()
 				buf := strings.NewReader(testFileContent)
@@ -221,10 +196,14 @@ func TestFileAddWithCustomKeys(t *testing.T) {
 				assert.NotEmpty(t, got.FileId)
 				got.Commit()
 
-				encKeys, err := fx.objectStore.GetFileKeys(got.FileId)
+				assertCustomEncryptionKeys(t, fx, got, customKeys)
+
+				// 无需任何密钥即可读出原文
+				reader, err := fx.GetContentReader(ctx, spaceId, got.Variants[0].Hash, "")
 				require.NoError(t, err)
-				assert.NotEmpty(t, encKeys)
-				assert.NotEqual(t, customKeys, encKeys)
+				content, err := io.ReadAll(reader)
+				require.NoError(t, err)
+				assert.Equal(t, testFileContent, string(content))
 			})
 		}
 	})

@@ -21,7 +21,12 @@ import (
 const (
 	CName = "client.space.localdiscovery"
 
-	serviceName = "_anytype._tcp"
+	// Fork isolation: our own mDNS service type. Official clients browse
+	// "_anytype._tcp" and we browse this, so the two networks never see
+	// each other on the same Wi-Fi. Same-build peers still discover one
+	// another because Register and Browse share this constant. mdnsDomain
+	// stays "local" (discovery logic itself is unchanged).
+	serviceName = "_myapp._tcp"
 	mdnsDomain  = "local"
 )
 

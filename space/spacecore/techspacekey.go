@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/anyproto/any-sync/commonspace/clientspaceproto"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/commonspace/object/acl/recordverifier"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
@@ -67,7 +66,7 @@ func (s *service) deriveTechSpaceExchange() (techSpaceExchange, error) {
 	if !ok || firstKeys.ReadKey == nil {
 		return techSpaceExchange{}, list.ErrNoReadKey
 	}
-	key, err := clientspaceproto.DeriveDiscoveryKey(firstKeys.ReadKey, id)
+	key, err := deriveDiscoveryKey(firstKeys.ReadKey, id)
 	if err != nil {
 		return techSpaceExchange{}, fmt.Errorf("derive discovery key: %w", err)
 	}

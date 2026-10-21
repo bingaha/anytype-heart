@@ -304,6 +304,53 @@ func (_c *MockService_DeleteFileData_Call) RunAndReturn(run func(string, string)
 	return _c
 }
 
+// EraseFileData provides a mock function with given fields: spaceId, objectId
+func (_m *MockService) EraseFileData(spaceId string, objectId string) error {
+	ret := _m.Called(spaceId, objectId)
+
+	if len(ret) == 0 {
+		panic("no return value specified for EraseFileData")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = rf(spaceId, objectId)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockService_EraseFileData_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'EraseFileData'
+type MockService_EraseFileData_Call struct {
+	*mock.Call
+}
+
+// EraseFileData is a helper method to define mock.On call
+//   - spaceId string
+//   - objectId string
+func (_e *MockService_Expecter) EraseFileData(spaceId interface{}, objectId interface{}) *MockService_EraseFileData_Call {
+	return &MockService_EraseFileData_Call{Call: _e.mock.On("EraseFileData", spaceId, objectId)}
+}
+
+func (_c *MockService_EraseFileData_Call) Run(run func(spaceId string, objectId string)) *MockService_EraseFileData_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(string), args[1].(string))
+	})
+	return _c
+}
+
+func (_c *MockService_EraseFileData_Call) Return(_a0 error) *MockService_EraseFileData_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockService_EraseFileData_Call) RunAndReturn(run func(string, string) error) *MockService_EraseFileData_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // DoFileWaitLoad provides a mock function with given fields: ctx, objectId, proc
 func (_m *MockService) DoFileWaitLoad(ctx context.Context, objectId string, proc func(editorfileobject.FileObject) error) error {
 	ret := _m.Called(ctx, objectId, proc)

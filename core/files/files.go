@@ -23,6 +23,7 @@ import (
 	mh "github.com/multiformats/go-multihash"
 
 	"github.com/anyproto/anytype-heart/core/domain"
+	"github.com/anyproto/anytype-heart/core/files/chunkspec"
 	"github.com/anyproto/anytype-heart/core/files/filestorage"
 	"github.com/anyproto/anytype-heart/pkg/lib/crypto/symmetric"
 	"github.com/anyproto/anytype-heart/pkg/lib/crypto/symmetric/cfb"
@@ -359,7 +360,8 @@ func (s *service) addFileNode(ctx context.Context, spaceID string, mill m.Mill, 
 
 	// count the result size after the applied mill
 	readerWithCounter := datacounter.NewReaderCounter(res.File)
-	variantChecksum, err := checksum(readerWithCounter, false)
+	// 明文全量同步：wontEncrypt=true，内容按原文计算 sha256，不再加密存放
+	variantChecksum, err := checksum(readerWithCounter, true)
 	if err != nil {
 		return nil, err
 	}
@@ -400,43 +402,31 @@ func (s *service) addFileNode(ctx context.Context, spaceID string, mill m.Mill, 
 		Size_:            int64(readerWithCounter.Count()),
 	}
 
-	key, err := getOrGenerateSymmetricKey(linkName, conf)
-	if err != nil {
-		return nil, err
-	}
-	encryptor := cfb.New(key, [aes.BlockSize]byte{})
-
-	contentReader, err := encryptor.EncryptReader(res.File)
-	if err != nil {
-		return nil, err
-	}
-
-	fileInfo.Key = key.String()
-
-	contentNode, err := s.addFileData(ctx, spaceID, contentReader, conf.FileHandler)
+	// 明文全量同步：不再生成密钥、不再加密，内容与元数据均以原文存放。
+	// Key 留空；读取侧（fileInfoFromPath key==""、GetContentReader encKey==""）
+	// 本就支持明文分支，旧密文块的解密分支予以保留以便排障。
+	// 超阈值内容额外写 chunk 块并配 pair 清单（见 addFileContent），content 主块
+	// 语义与小文件路径不受影响。
+	contentNode, chunkNodes, err := s.addFileContent(ctx, spaceID, res.File, conf.FileHandler, int64(readerWithCounter.Count()))
 	if err != nil {
 		return nil, err
 	}
 
+	fileInfo.Key = ""
 	fileInfo.Hash = contentNode.Cid().String()
 	rawMeta, err := proto.Marshal(fileInfo)
 	if err != nil {
 		return nil, err
 	}
 
-	metaReader, err := encryptor.EncryptReader(bytes.NewReader(rawMeta))
-	if err != nil {
-		return nil, err
-	}
-
-	metaNode, err := s.addFileData(ctx, spaceID, metaReader, conf.FileHandler)
+	metaNode, err := s.addFileData(ctx, spaceID, bytes.NewReader(rawMeta), conf.FileHandler)
 	if err != nil {
 		return nil, err
 	}
 	fileInfo.MetaHash = metaNode.Cid().String()
 
 	dagService := s.dagServiceForSpace(spaceID, conf.FileHandler)
-	pairNode, err := s.addFilePairNode(ctx, dagService, spaceID, fileInfo, conf)
+	pairNode, err := s.addFilePairNode(ctx, dagService, spaceID, fileInfo, conf, chunkNodes)
 	if err != nil {
 		return nil, err
 	}
@@ -450,15 +440,45 @@ func (s *service) addFileNode(ctx context.Context, spaceID string, mill m.Mill, 
 	return newAddedFileResult(fileInfo, pairNode)
 }
 
-func getOrGenerateSymmetricKey(linkName string, opts AddOptions) (symmetric.Key, error) {
-	if key, exists := opts.CustomEncryptionKeys[encryptionKeyPath(linkName)]; exists {
-		symKey, err := symmetric.FromString(key)
-		if err == nil {
-			return symKey, nil
-		}
-		return symmetric.NewRandom()
+// addFileContent stores file content as one whole raw block — exactly what
+// addFileData would store — and, when the content exceeds the transport chunk
+// size, additionally stores one raw block per fixed-size chunk for wire
+// transport (see chunkspec).
+//
+// Small contents take the legacy streaming addFileData path untouched, so
+// their DAG, CIDs and behavior are byte-identical to before. Large contents
+// keep the same whole block (fileInfo.Hash/CID unchanged, local readers
+// unaffected); the chunk blocks plus the pair-directory manifest only add a
+// discoverable transport sharding on top.
+func (s *service) addFileContent(ctx context.Context, spaceID string, r io.Reader, fileHandler *fileservice.FileHandler, size int64) (whole ipld.Node, chunks []ipld.Node, err error) {
+	if size <= chunkspec.ChunkSizeBytes() {
+		whole, err = s.addFileData(ctx, spaceID, r, fileHandler)
+		return whole, nil, err
 	}
-	return symmetric.NewRandom()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read large file content: %w", err)
+	}
+	if int64(len(data)) <= chunkspec.ChunkSizeBytes() {
+		// Stream shrank below the threshold between checksum and here:
+		// plain single block, no manifest.
+		whole, err = s.addFileData(ctx, spaceID, bytes.NewReader(data), fileHandler)
+		return whole, nil, err
+	}
+	whole, err = s.addFileData(ctx, spaceID, bytes.NewReader(data), fileHandler)
+	if err != nil {
+		return nil, nil, err
+	}
+	cs := chunkspec.ChunkSizeBytes()
+	for off := int64(0); off < int64(len(data)); off += cs {
+		end := min(off+cs, int64(len(data)))
+		node, err := s.addFileData(ctx, spaceID, bytes.NewReader(data[off:end]), fileHandler)
+		if err != nil {
+			return nil, nil, fmt.Errorf("add content chunk: %w", err)
+		}
+		chunks = append(chunks, node)
+	}
+	return whole, chunks, nil
 }
 
 // addFilePairNode has structure:
@@ -466,8 +486,9 @@ func getOrGenerateSymmetricKey(linkName string, opts AddOptions) (symmetric.Key,
 - dir (pair)
 	- meta
 	- content
+	- chunk-000000 … (only for contents larger than the transport chunk size)
 */
-func (s *service) addFilePairNode(ctx context.Context, dagService ipld.DAGService, spaceID string, file *storage.FileInfo, opts AddOptions) (ipld.Node, error) {
+func (s *service) addFilePairNode(ctx context.Context, dagService ipld.DAGService, spaceID string, file *storage.FileInfo, opts AddOptions, chunkNodes []ipld.Node) (ipld.Node, error) {
 	pair, err := uio.NewDirectory(dagService)
 	if err != nil {
 		return nil, err
@@ -485,6 +506,13 @@ func (s *service) addFilePairNode(ctx context.Context, dagService ipld.DAGServic
 	err = helpers.AddLinkToDirectory(ctx, dagService, pair, ContentLinkName, file.Hash)
 	if err != nil {
 		return nil, fmt.Errorf("add content link: %w", err)
+	}
+	// 明文全量同步（06）：超阈值文件追加 chunk 清单链接。content/meta 语义与
+	// 既有读取路径不受影响；无清单即 legacy 单块文件，按原路径一次到位。
+	for i, chunk := range chunkNodes {
+		if err := helpers.AddLinkToDirectory(ctx, dagService, pair, chunkspec.ChunkLinkName(i), chunk.Cid().String()); err != nil {
+			return nil, fmt.Errorf("add chunk link: %w", err)
+		}
 	}
 
 	pairNode, err := pair.GetNode()

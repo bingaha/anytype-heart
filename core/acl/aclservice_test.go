@@ -260,11 +260,13 @@ func TestService_StopSharing(t *testing.T) {
 			func(ctx context.Context, spaceId string, f func(view techspace.SpaceView) error) error {
 				return f(fx.mockSpaceView)
 			})
-		fx.mockCommonSpace.EXPECT().Acl().Return(mockSyncAcl{fx.mockAcl})
+		fx.mockCommonSpace.EXPECT().Acl().Return(mockSyncAcl{fx.mockAcl}).Times(2)
 		fx.mockCommonSpace.EXPECT().AclClient().Return(fx.mockSpaceClient)
 		fx.mockSpaceClient.EXPECT().StopSharing(ctx, gomock.Any()).Return(nil)
 		fx.mockAcl.EXPECT().RLock().AnyTimes()
 		fx.mockAcl.EXPECT().RUnlock().AnyTimes()
+		// currentReadKeyChange 沿用当前读密钥：用真实执行器 ACL 的状态（派生读密钥）。
+		fx.mockAcl.EXPECT().AclState().Return(newAcl(t).AclState()).AnyTimes()
 		fx.mockAcl.EXPECT().Head().Return(&list.AclRecord{Id: "headId"})
 		fx.mockInviteService.EXPECT().RemoveExisting(ctx, "spaceId").Return(domain.InviteInfo{}, nil)
 		sleepTime = time.Millisecond
@@ -288,11 +290,13 @@ func TestService_StopSharing(t *testing.T) {
 			func(ctx context.Context, spaceId string, f func(view techspace.SpaceView) error) error {
 				return f(fx.mockSpaceView)
 			})
-		fx.mockCommonSpace.EXPECT().Acl().Return(mockSyncAcl{fx.mockAcl})
+		fx.mockCommonSpace.EXPECT().Acl().Return(mockSyncAcl{fx.mockAcl}).Times(2)
 		fx.mockCommonSpace.EXPECT().AclClient().Return(fx.mockSpaceClient)
 		fx.mockSpaceClient.EXPECT().StopSharing(ctx, gomock.Any()).Return(nil)
 		fx.mockAcl.EXPECT().RLock().AnyTimes()
 		fx.mockAcl.EXPECT().RUnlock().AnyTimes()
+		// currentReadKeyChange 沿用当前读密钥：用真实执行器 ACL 的状态（派生读密钥）。
+		fx.mockAcl.EXPECT().AclState().Return(newAcl(t).AclState()).AnyTimes()
 		fx.mockAcl.EXPECT().Head().Return(&list.AclRecord{Id: "headId"})
 		fx.mockInviteService.EXPECT().RemoveExisting(ctx, "spaceId").Return(domain.InviteInfo{}, nil)
 		err := fx.StopSharing(ctx, "spaceId")
@@ -308,7 +312,9 @@ func TestService_ApproveLeave(t *testing.T) {
 		mockSpace := mock_clientspace.NewMockSpace(t)
 		mockCommonSpace := mock_commonspace.NewMockSpace(fx.ctrl)
 		fx.mockSpaceService.EXPECT().Get(ctx, spaceId).Times(2).Return(mockSpace, nil)
-		mockSpace.EXPECT().CommonSpace().Times(2).Return(mockCommonSpace)
+		// ApproveLeave 取一次 CommonSpace（Acl），其内部的 Remove 又取一次
+		//（读当前读密钥做无轮换填充）；真实 ACL 自带读密钥。
+		mockSpace.EXPECT().CommonSpace().Return(mockCommonSpace).Times(2)
 		exec := list.NewAclExecutor(spaceId)
 		type cmdErr struct {
 			cmd string
@@ -331,7 +337,8 @@ func TestService_ApproveLeave(t *testing.T) {
 		identityB := exec.ActualAccounts()["b"].Keys.SignKey.GetPublic()
 		identityC := exec.ActualAccounts()["c"].Keys.SignKey.GetPublic()
 		acl := mockSyncAcl{exec.ActualAccounts()["a"].Acl}
-		mockCommonSpace.EXPECT().Acl().Return(acl)
+		// ApproveLeave 读一次 Acl（待移除记录检查），Remove 经 currentReadKeyChange 再读一次。
+		mockCommonSpace.EXPECT().Acl().Return(acl).Times(2)
 		aclClient := mock_aclclient.NewMockAclSpaceClient(fx.ctrl)
 		mockCommonSpace.EXPECT().AclClient().Return(aclClient)
 		aclClient.EXPECT().RemoveAccounts(ctx, gomock.Any()).DoAndReturn(func(ctx context.Context, payload list.AccountRemovePayload) error {
@@ -558,8 +565,9 @@ func TestService_RevokeInvite(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("revoking an anyone-can-join invite rotates the read key", func(t *testing.T) {
-		// given a space whose acl offers an invite anyone can join with -- it embedded the read key
+	t.Run("revoking an anyone-can-join invite does not rotate the read key", func(t *testing.T) {
+		// given a space whose acl offers an invite anyone can join with.
+		// 明文全量同步：撤销不再轮换读密钥，只做普通撤销。
 		fx := newFixture(t)
 		defer fx.finish(t)
 		revoked := domain.InviteInfo{
@@ -568,8 +576,7 @@ func TestService_RevokeInvite(t *testing.T) {
 			InviteType:    domain.InviteTypeAnyone,
 		}
 		revokeMocks(fx, newAcl(t, "a.invite_anyone::invId,r"))
-		// the rotating variant is used, so the key the invite handed out stops working
-		fx.mockSpaceClient.EXPECT().RevokeAllInvitesAndRotate(ctx, gomock.Any()).Return(nil)
+		fx.mockSpaceClient.EXPECT().RevokeAllInvites(ctx).Return(nil)
 		fx.mockInviteService.EXPECT().RemoveExisting(ctx, "spaceId").Return(revoked, nil)
 		fx.mockInviteCleanup.EXPECT().InviteRevoked(ctx, "spaceId", revoked).Return(nil)
 
@@ -654,8 +661,10 @@ func TestService_GenerateInvite(t *testing.T) {
 		require.Equal(t, "newCid", info.InviteFileCid)
 	})
 
-	t.Run("replacing an anyone-can-join invite rotates the read key before creating the new one", func(t *testing.T) {
-		// given a space whose current invite is one anyone can join with -- it embedded the read key
+	t.Run("replacing an anyone-can-join invite does not rotate the read key", func(t *testing.T) {
+		// given a space whose current invite is one anyone can join with.
+		// 明文全量同步：替换邀请不再先行撤销+轮换读密钥，直接创建替换邀请；
+		// 成功后被替换掉的旧邀请照常进入清理。
 		fx := newFixture(t)
 		defer fx.finish(t)
 		spaceId := "spaceId"
@@ -676,11 +685,7 @@ func TestService_GenerateInvite(t *testing.T) {
 		mockCommonSpace.EXPECT().Acl().Return(newAcl(t, "a.invite_anyone::invId,r"))
 		fx.mockSpaceService.EXPECT().Get(ctx, spaceId).Return(mockSpace, nil)
 		rec := &consensusproto.RawRecord{Payload: []byte("test")}
-		// the leaked key is rotated away first, then the replacement invite is created against the new key
-		rotate := mockAclClient.EXPECT().RevokeAllInvitesAndRotate(ctx, gomock.Any()).Return(nil)
-		// the rotation record revoked the old invite, so its details are cleared right away
-		fx.mockInviteService.EXPECT().RemoveExisting(ctx, spaceId).Return(replaced, nil)
-		mockAclClient.EXPECT().ReplaceInvite(gomock.Any(), gomock.Any()).After(rotate).
+		mockAclClient.EXPECT().ReplaceInvite(gomock.Any(), gomock.Any()).
 			Return(list.InviteResult{InviteRec: rec, InviteKey: keys.SignKey}, nil)
 		mockAclClient.EXPECT().AddRecord(ctx, rec).Return(nil)
 		fx.mockInviteService.EXPECT().Generate(ctx, mock.Anything, mock.Anything).
@@ -696,10 +701,10 @@ func TestService_GenerateInvite(t *testing.T) {
 		require.Equal(t, "newCid", info.InviteFileCid)
 	})
 
-	t.Run("a failure after the rotation leaves no dead invite advertised", func(t *testing.T) {
-		// given a space whose anyone-can-join invite was revoked and rotated away, but creating the
-		// replacement fails mid-flight. The details were already cleared when the rotation landed, so
-		// GetCurrent answers "no invite" instead of a dead link, and a retry generates cleanly.
+	t.Run("a failure creating the replacement reports the error", func(t *testing.T) {
+		// given a space whose anyone-can-join invite is being replaced, but creating the
+		// replacement fails mid-flight. 明文全量同步下不再有先行的撤销+轮换记录，
+		// 失败即整体失败，不触发旧邀请的清理。
 		fx := newFixture(t)
 		defer fx.finish(t)
 		spaceId := "spaceId"
@@ -717,18 +722,13 @@ func TestService_GenerateInvite(t *testing.T) {
 		mockCommonSpace.EXPECT().AclClient().Return(mockAclClient)
 		mockCommonSpace.EXPECT().Acl().Return(newAcl(t, "a.invite_anyone::invId,r"))
 		fx.mockSpaceService.EXPECT().Get(ctx, spaceId).Return(mockSpace, nil)
-		rotate := mockAclClient.EXPECT().RevokeAllInvitesAndRotate(ctx, gomock.Any()).Return(nil)
-		fx.mockInviteService.EXPECT().RemoveExisting(ctx, spaceId).Return(replaced, nil)
-		mockAclClient.EXPECT().ReplaceInvite(gomock.Any(), gomock.Any()).After(rotate).
+		mockAclClient.EXPECT().ReplaceInvite(gomock.Any(), gomock.Any()).
 			Return(list.InviteResult{}, errors.New("network gone"))
-		// the old invite is revoked all the same, so its file still goes to the cleanup
-		fx.mockInviteCleanup.EXPECT().InviteRevoked(ctx, spaceId, replaced).Return(nil)
 
-		// when the replacement fails after the rotation record landed
+		// when the replacement fails
 		_, err := fx.GenerateInvite(ctx, spaceId, model.InviteType_Member, model.ParticipantPermissions_Reader, false)
 
-		// then the caller sees the failure -- and the details were cleared, not left pointing at a
-		// revoked invite
+		// then the caller sees the failure
 		require.Error(t, err)
 	})
 
