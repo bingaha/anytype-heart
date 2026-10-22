@@ -5,7 +5,13 @@
 # error, and coordinators reject unknown network ids.
 # Operators running their own subnet nodes point ANY_SYNC_NETWORK (or the custom
 # network config path) at their own yml instead of rebuilding with this file.
-networkId: NbRew1RSMhiFXSS1F24kgeh48WT67LqwkHtCAA8i48n4pHBP
+# NOTE: networkId is a strkey (version byte 0xd3, "N...") encoding of the
+# subnet's ed25519 network public key (see any-sync util/crypto.DecodeNetworkId).
+# tech-space derivation unmarshals it as a public key, so a hand-written
+# base58 string fails with "invalid version byte" / "invalid point encoding".
+# The matching private key for future self-hosted coordinator nodes lives next
+# to this file (fork-network.key, 0600, NOT committed).
+networkId: N5LutWJ1H3xuEuKLFX94VaRTgLENLemRXJVxiuHLcMMtzrxw
 nodes:
   - peerId: 12D3KooWCywWYgfDZmamJxvWKAvMT5AYDdRG8MMhCpYLHjW8aX7K
     addresses:

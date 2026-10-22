@@ -33,3 +33,6 @@ doc/dependency_decisions.yml
 /anyblockconvert
 /anyblockvalidate
 /apiv2eval
+
+# fork test network private key (never commit)
+core/anytype/config/nodes/fork-network.key

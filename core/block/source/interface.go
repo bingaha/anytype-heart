@@ -10,6 +10,7 @@ import (
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/synctree/updatelistener"
+	"github.com/anyproto/any-sync/commonspace/object/tree/treestorage"
 	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 
 	"github.com/anyproto/anytype-heart/core/block/editor/state"
@@ -145,7 +146,11 @@ func (b *BuildOptions) BuildTreeOpts() objecttreebuilder.BuildTreeOpts {
 	return objecttreebuilder.BuildTreeOpts{
 		Listener: b.Listener,
 		TreeBuilder: func(treeStorage objecttree.Storage, aclList list.AclList) (objecttree.ObjectTree, error) {
-			ot, err := objecttree.BuildKeyFilterableObjectTree(treeStorage, aclList)
+			// 明文全量同步 fork：ACL 无读密钥，跳过读密钥校验与按密钥过滤
+			// （签名/权限/ACL 顺序校验仍在，见 verifiableTreeDeps）。
+			// KeyFilterable 变体会把所有无密钥 change 当不可读过滤掉，
+			// 在本分叉里等于丢弃全部同步内容，故不可用。
+			ot, err := objecttree.BuildObjectTree(treeStorage, aclList)
 			if err != nil {
 				return nil, err
 			}
@@ -158,8 +163,42 @@ func (b *BuildOptions) BuildTreeOpts() objecttreebuilder.BuildTreeOpts {
 			}
 			return ot, nil
 		},
-		TreeValidator: objecttree.ValidateFilterRawTree,
+		TreeValidator: validateRawTreeNoReadKey,
 	}
+}
+
+// validateRawTreeNoReadKey mirrors any-sync's ValidateFilterRawTree but
+// without the read-permission gate and without key filtering: in this fork
+// ACLs carry no read keys, so HadReadPermissions is always false and the
+// key-filtering builder would discard every change. Signatures, write
+// permissions and ACL ordering are still validated by the (false, false)
+// validator inside BuildEmptyDataObjectTree.
+func validateRawTreeNoReadKey(payload treestorage.TreeStorageCreatePayload, storageCreator objecttree.TreeStorageCreator, aclList list.AclList) (objecttree.ObjectTree, error) {
+	ctx := context.Background()
+	treeStorage, err := storageCreator.CreateStorageWithDeferredCreation(ctx, treestorage.TreeStorageCreatePayload{
+		RootRawChange: payload.RootRawChange,
+		Heads:         []string{payload.RootRawChange.Id},
+	})
+	if err != nil {
+		return nil, err
+	}
+	tree, err := objecttree.BuildEmptyDataObjectTree(treeStorage, aclList)
+	if err != nil {
+		return nil, err
+	}
+	tree.Lock()
+	defer tree.Unlock()
+	_, err = tree.AddRawChanges(context.Background(), objecttree.RawChangesPayload{
+		NewHeads:   payload.Heads,
+		RawChanges: payload.Changes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if objecttree.IsEmptyTree(tree) {
+		return nil, objecttree.ErrNoChangeInTree
+	}
+	return tree, nil
 }
 
 type StaticSourceParams struct {
