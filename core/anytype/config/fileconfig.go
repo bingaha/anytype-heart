@@ -88,11 +88,8 @@ func readPersistedConfig(configPath string) (PersistedConfig, error) {
 		return cfg, errors.Join(ErrInvalidConfigFormat, err)
 	}
 
-	// Migration: if legacy AutoDownloadFiles is enabled but no size limit is set,
-	// default to the old 20 MiB limit
-	if cfg.AutoDownloadFiles && cfg.AutoDownloadSizeLimitMb == 0 {
-		cfg.AutoDownloadSizeLimitMb = 20
-	}
+	// 明文全量同步 fork 语义：0 即不限。官方“启用但无上限则补 20MB”的
+	// 迁移在此分叉不适用（不迁官方老数据），大小缺失一律按不限处理。
 
 	return cfg, nil
 }

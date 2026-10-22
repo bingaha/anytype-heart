@@ -105,8 +105,14 @@ func (s *Service) handleCustomStorageLocation(req *pb.RpcAccountCreateRequest, a
 		if err != nil {
 			return errors.Join(ErrFailedToCreateLocalRepo, err)
 		}
-		// Bootstrap config will later read this config with custom storage location
-		if err := config.BootstrapPersistedConfig(configPath, config.PersistedConfig{CustomFileStorePath: storePath}); err != nil {
+		// Bootstrap config will later read this config with custom storage location.
+		// 明文全量同步 fork 默认随账号落盘：自动下载启用、大小不限、不限制网络。
+		if err := config.BootstrapPersistedConfig(configPath, config.PersistedConfig{
+			CustomFileStorePath:     storePath,
+			AutoDownloadFiles:       true,
+			AutoDownloadOnWifiOnly:  false,
+			AutoDownloadSizeLimitMb: 0,
+		}); err != nil {
 			return errors.Join(ErrFailedToWriteConfig, err)
 		}
 	}

@@ -304,9 +304,14 @@ func TestSubscriptionReloadOnLimitChange(t *testing.T) {
 }
 
 func TestForkDefaultsFullSync(t *testing.T) {
-	// 明文全量同步 fork 默认：Run 之后自动下载启用、大小不限、不限网络，
+	// 明文全量同步 fork 默认：新账号落盘即全开（启用、大小不限、不限网络），
+	// Run 只读 persisted；用户显式修改持久化，重启后继续生效。
 	// 下游订阅不带 SizeInBytes 过滤（订阅过滤逻辑本身不动）。
 	fx := newServiceFixture(t)
+
+	// 模拟新账号首启落盘的 fork 默认（对应 BootstrapPersistedConfig）。
+	require.NoError(t, fx.config.SetAutoDownloadSettings(true, false))
+	require.NoError(t, fx.config.SetAutoDownloadSizeLimitMb(0))
 
 	require.NoError(t, fx.Run(context.Background()))
 
@@ -319,4 +324,18 @@ func TestForkDefaultsFullSync(t *testing.T) {
 	assert.True(t, fx.isEnabled, "auto download should be enabled by default")
 	assert.False(t, fx.wifiOnly, "download should not be restricted to wifi by default")
 	assert.Zero(t, fx.sizeLimitMb, "size limit should be unlimited (0) by default")
+}
+
+func TestForkDefaultsRestartPersistence(t *testing.T) {
+	// 用户显式关闭后持久化；“重启”（重建 service 并 Run）后保持关闭，
+	// 不再回到 fork 默认。
+	fx := newServiceFixture(t)
+	require.NoError(t, fx.config.SetAutoDownloadSettings(false, false))
+
+	require.NoError(t, fx.Run(context.Background()))
+
+	fx.lock.Lock()
+	defer fx.lock.Unlock()
+	assert.False(t, fx.isEnabled, "user-disabled auto download should stay disabled after restart")
+	assert.Nil(t, fx.downloader, "no downloader subscription should start when disabled")
 }

@@ -164,9 +164,9 @@ func TestReadPersistedConfig(t *testing.T) {
 		cfg, err := readPersistedConfig(configPath)
 		require.NoError(t, err)
 
-		// Migration sets AutoDownloadSizeLimitMb to 20 MiB when AutoDownloadFiles is true
+		// 明文全量同步 fork 语义：0 即不限，不补官方 20MB 上限。
 		expectedCfg := writeCfg
-		expectedCfg.AutoDownloadSizeLimitMb = 20
+		expectedCfg.AutoDownloadSizeLimitMb = 0
 		assert.Equal(t, expectedCfg, cfg)
 	})
 }

@@ -420,6 +420,20 @@ func (c *Config) initFromFileAndEnv(repoPath string) error {
 		c.persisted = confRequired
 		c.mu.Unlock()
 
+		// 明文全量同步 fork 首启默认：新账号（尚无 config.json）直接落盘
+		// 全量下载默认——启用、大小不限（0）、不限网络。老账号的显式修改
+		// 原样保留；Run() 只读 persisted，不再硬编码。
+		if _, statErr := os.Stat(c.configPath); os.IsNotExist(statErr) {
+			c.mu.Lock()
+			c.persisted.AutoDownloadFiles = true
+			c.persisted.AutoDownloadOnWifiOnly = false
+			c.persisted.AutoDownloadSizeLimitMb = 0
+			c.mu.Unlock()
+			if err := c.writeLocked(); err != nil {
+				return err
+			}
+		}
+
 		// Do not overwrite the legacy file store path from file if it's already set in memory
 		if confRequired.LegacyFileStorePath == "" && inMemoryLegacyPath != "" {
 			if err := c.SetLegacyFileStorePath(inMemoryLegacyPath); err != nil {

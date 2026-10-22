@@ -15,6 +15,7 @@ Scope: global
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anyproto/any-sync/app"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/anyproto/anytype-heart/core/block/object/idresolver"
 	"github.com/anyproto/anytype-heart/core/domain"
+	"github.com/anyproto/anytype-heart/core/files/chunkspec"
 	"github.com/anyproto/anytype-heart/core/files/filehelper"
 	filestorage2 "github.com/anyproto/anytype-heart/core/files/filestorage"
 	"github.com/anyproto/anytype-heart/core/syncstatus/filesyncstatus"
@@ -241,11 +243,11 @@ func (s *service) FileOffloadRaw(ctx context.Context, id domain.FullFileId) (tot
 }
 
 func (s *service) getAllExistingFileBlocksCids(ctx context.Context, id domain.FullFileId) (totalSize uint64, cids []cid.Cid, err error) {
-	var getCidsLinksRecursively func(c cid.Cid) (err error)
+	var getCidsLinksRecursively func(c cid.Cid, countSize bool) (err error)
 	dagService := s.dagServiceForSpace(id.SpaceId)
 
 	var visitedMap = make(map[string]struct{})
-	getCidsLinksRecursively = func(c cid.Cid) (err error) {
+	getCidsLinksRecursively = func(c cid.Cid, countSize bool) (err error) {
 		if exists, err := s.hasCid(ctx, id.SpaceId, c); err != nil {
 			return err
 		} else if !exists {
@@ -263,8 +265,11 @@ func (s *service) getAllExistingFileBlocksCids(ctx context.Context, id domain.Fu
 			log.Error("GetAllExistingFileBlocksCids: failed to get links", zap.Error(err))
 		}
 		cancel()
-		if n != nil {
-			// use rawData because Size() includes size of inner links which may be not loaded
+		if n != nil && countSize {
+			// use rawData because Size() includes size of inner links which may be not loaded.
+			// Chunk-manifest links (chunk-*) are transport duplicates of the
+			// content block: collect their CIDs for deletion but do not count
+			// their bytes, or freed space would read ~2x for chunked files.
 			totalSize += uint64(len(n.RawData()))
 		}
 		if n == nil || len(n.Links()) == 0 {
@@ -275,7 +280,7 @@ func (s *service) getAllExistingFileBlocksCids(ctx context.Context, id domain.Fu
 				continue
 			}
 			visitedMap[link.Cid.String()] = struct{}{}
-			err := getCidsLinksRecursively(link.Cid)
+			err := getCidsLinksRecursively(link.Cid, countSize && !strings.HasPrefix(link.Name, chunkspec.ChunkLinkPrefix))
 			if err != nil {
 				return err
 			}
@@ -289,7 +294,7 @@ func (s *service) getAllExistingFileBlocksCids(ctx context.Context, id domain.Fu
 		return 0, nil, err
 	}
 
-	err = getCidsLinksRecursively(c)
+	err = getCidsLinksRecursively(c, true)
 
 	return
 }

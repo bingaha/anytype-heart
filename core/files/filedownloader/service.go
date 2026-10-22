@@ -119,12 +119,11 @@ func (s *service) Init(a *app.App) error {
 }
 
 func (s *service) Run(ctx context.Context) error {
-	// 明文全量同步 fork 默认：全量节点默认全下——自动下载启用、大小不限（0 即
-	// 不限，下游订阅在 limit<=0 时不加大小过滤）、不限网络（wifiOnly=false，
-	// networkStateChanged 不会按网络停下下载器）。用户经 SetEnabled/SetSizeLimit
-	// 的显式修改在本次运行即时生效并持久化；重启后回到 fork 默认。
+	// 明文全量同步 fork：全量下载的开关只读 persisted。新账号的 fork 默认
+	// （启用、大小不限即 0、不限制网络）在账号创建/首启时落盘；用户经
+	// SetEnabled/SetSizeLimit 的显式修改持久化并在重启后继续生效。
 	// （订阅过滤条件本身不动，见 downloader.runSubscription。）
-	s.setDownloadState(true, false, 0)
+	s.setDownloadState(s.config.AutoDownloadFiles(), s.config.AutoDownloadOnWifiOnly(), s.config.AutoDownloadSizeLimitMb())
 	for range 5 {
 		go s.cacheWarmer.runWorker()
 	}
